@@ -20,6 +20,7 @@ Domain Factory Helpers (importable async functions)
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -444,6 +445,22 @@ async def make_downloader_provider(
     }
     fields.update(overrides)
     provider = Provider(**fields)
+    session.add(provider)
+    await session.flush()
+    return provider
+
+
+async def make_delivery_provider(
+    session: AsyncSession, **config_overrides: Any
+) -> Provider:
+    """Create, flush, and return an active ``category="delivery"`` ``local_directory`` ``Provider``."""
+    provider = Provider(
+        name="local_directory",
+        type="local_directory",
+        category="delivery",
+        is_active=True,
+        config_json=json.dumps(config_overrides),
+    )
     session.add(provider)
     await session.flush()
     return provider

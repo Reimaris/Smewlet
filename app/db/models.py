@@ -192,6 +192,12 @@ class SystemSettings(Base):
     notify_on_outages: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )
+    notify_on_delivery_failed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    notify_on_delivered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     onboarding_completed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
     )
@@ -238,6 +244,18 @@ class ProviderCategory(str, enum.Enum):
     METADATA = "metadata"
     DOWNLOADER = "downloader"
     INDEXER = "indexer"
+    DELIVERY = "delivery"
+
+
+class DeliveryStatus(str, enum.Enum):
+    """Per-push local directory delivery state."""
+
+    NONE = "none"  # delivery off for this push
+    PENDING = "pending"  # downloader finished, delivery not started
+    DELIVERING = "delivering"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+    PAUSED = "paused"  # INSUFFICIENT_STORAGE or PATH_UNAVAILABLE
 
 
 ACTIVE_LIST_STATUSES: frozenset[str] = frozenset({"plantowatch", "watching", "on_hold"})
@@ -1478,6 +1496,21 @@ class DownloadHistory(Base):
     outage_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    deliver_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    delivery_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=DeliveryStatus.NONE.value,
+        server_default=DeliveryStatus.NONE.value,
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    delivery_error: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, default=None
+    )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
@@ -1581,4 +1614,37 @@ class FailureLog(Base):
     )
     episode: Mapped[Episode | None] = relationship(
         "Episode", back_populates="failure_logs"
+    )
+
+
+class DeliveredFile(Base):
+    """One file delivered (or planned for delivery) to the local directory."""
+
+    __tablename__ = "delivered_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    history_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("download_history.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    episode_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("episodes.id", ondelete="SET NULL"), nullable=True
+    )
+    season_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("seasons.id", ondelete="SET NULL"), nullable=True
+    )
+    source_name: Mapped[str] = mapped_column(String(1000), nullable=False)
+    dest_path: Mapped[str | None] = mapped_column(
+        String(2000), nullable=True, default=None, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # video | subtitle
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending"
+    )  # pending | delivered | failed | skipped
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    anilist_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -1127,6 +1127,13 @@ async def init_db(database_url: str) -> None:
                 "UPDATE media_items SET prefer_season_packs = 0 WHERE allow_season_packs = 0 AND prefer_season_packs = 1;",
                 # Backfill existing terminal DownloadHistory rows to notification_sent = 1
                 "UPDATE download_history SET notification_sent = 1 WHERE status_detail IN ('completed', 'failed', 'deleted', 'replaced', 'canceled') OR LOWER(COALESCE(status_detail, '')) LIKE 'failed%';",
+                # Local directory delivery state and notification toggles (m78)
+                "ALTER TABLE download_history ADD COLUMN deliver_enabled BOOLEAN NOT NULL DEFAULT 0;",
+                "ALTER TABLE download_history ADD COLUMN delivery_status VARCHAR(20) NOT NULL DEFAULT 'none';",
+                "ALTER TABLE download_history ADD COLUMN delivered_at TIMESTAMP;",
+                "ALTER TABLE download_history ADD COLUMN delivery_error VARCHAR(500);",
+                "ALTER TABLE system_settings ADD COLUMN notify_on_delivery_failed BOOLEAN NOT NULL DEFAULT 1;",
+                "ALTER TABLE system_settings ADD COLUMN notify_on_delivered BOOLEAN NOT NULL DEFAULT 0;",
                 # First-run onboarding sentinel (m54)
                 "ALTER TABLE system_settings ADD COLUMN onboarding_completed BOOLEAN NOT NULL DEFAULT 0;",
             ]
@@ -1318,6 +1325,10 @@ async def init_db(database_url: str) -> None:
                                 notification_sent BOOLEAN NOT NULL DEFAULT 0,
                                 auto_replaced_count INTEGER NOT NULL DEFAULT 0,
                                 outage_attempts INTEGER NOT NULL DEFAULT 0,
+                                deliver_enabled BOOLEAN NOT NULL DEFAULT 0,
+                                delivery_status VARCHAR(20) NOT NULL DEFAULT 'none',
+                                delivered_at TIMESTAMP,
+                                delivery_error VARCHAR(500),
                                 completed_at DATETIME,
                                 failed_at DATETIME,
                                 unpack_started_at TIMESTAMP,
@@ -1369,6 +1380,10 @@ async def init_db(database_url: str) -> None:
                         "notification_sent",
                         "auto_replaced_count",
                         "outage_attempts",
+                        "deliver_enabled",
+                        "delivery_status",
+                        "delivered_at",
+                        "delivery_error",
                         "completed_at",
                         "failed_at",
                         "unpack_started_at",
