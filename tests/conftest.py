@@ -25,6 +25,7 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -46,7 +47,15 @@ from app.db.models import (
     SeasonStatus,
 )
 from app.main import app
+from app.services.delivery import engines as delivery_engines
+from app.services.delivery import worker as delivery_worker
 from app.services.downloaders import torbox
+from app.services.downloaders.base import (
+    DownloaderFile,
+    DownloaderTransfer,
+    DownloadLink,
+    TransferState,
+)
 from app.services.watchlists import simkl
 
 # Override DB URL for tests
@@ -640,3 +649,60 @@ async def seed_setup_ready(session: AsyncSession) -> None:
     await make_downloader_provider(session)
     await make_watchlist_provider(session, "simkl", client_id="cid", access_token="tok")
     await session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Delivery (m78) shared fakes
+# ---------------------------------------------------------------------------
+
+NAME = "Example.Show.S01E01.1080p.WEB-DL.mkv"
+PAYLOAD = b"x" * 3000
+URL = "https://example.com/dl/file.mkv"
+
+
+class FakeDownloaderClient:
+    def __init__(self, size: int = len(PAYLOAD), folder: str | None = None) -> None:
+        self.size, self.folder = size, folder
+
+    async def get_transfer_files(self, _tid: str) -> list[DownloaderFile]:
+        return [DownloaderFile(name=NAME, size_bytes=300 * 1024 * 1024)]
+
+    async def get_download_links(self, _tid: str) -> list[DownloadLink]:
+        return [DownloadLink(name=NAME, url=URL, size_bytes=self.size)]
+
+    async def get_transfers(self) -> list[DownloaderTransfer]:
+        return [
+            DownloaderTransfer(
+                transfer_id="tb-9000",
+                name="x",
+                state=TransferState.COMPLETED,
+                progress_pct=100.0,
+                folder_id=self.folder,
+            )
+        ]
+
+
+@pytest.fixture(autouse=True)
+def fresh_delivery_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(delivery_worker, "_queue", None)
+
+
+@pytest.fixture
+def downloader(monkeypatch: pytest.MonkeyPatch):
+    def _set(client: FakeDownloaderClient) -> None:
+        async def get(_s: Any, _t: str) -> FakeDownloaderClient:
+            return client
+
+        for mod in (delivery_worker, delivery_engines):
+            monkeypatch.setattr(mod, "get_downloader_client_for_type", get)
+        monkeypatch.setattr(
+            delivery_engines,
+            "_client_factory",
+            lambda: httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda r: httpx.Response(200, content=PAYLOAD)
+                )
+            ),
+        )
+
+    return _set

@@ -7,72 +7,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DeliveredFile, DownloadHistory
-from app.services.delivery import engines, worker
-from app.services.downloaders.base import (
-    DownloaderFile,
-    DownloaderTransfer,
-    DownloadLink,
-    TransferState,
+from app.services.delivery import worker
+from tests.conftest import (
+    NAME,
+    PAYLOAD,
+    FakeDownloaderClient,
+    make_delivery_provider,
+    make_history,
 )
-from tests.conftest import make_delivery_provider, make_history
-
-NAME = "Example.Show.S01E01.1080p.WEB-DL.mkv"
-PAYLOAD = b"x" * 3000
-URL = "https://example.com/dl/file.mkv"
-
-
-class _Client:
-    def __init__(self, size: int = len(PAYLOAD), folder: str | None = None) -> None:
-        self.size, self.folder = size, folder
-
-    async def get_transfer_files(self, _tid: str) -> list[DownloaderFile]:
-        return [DownloaderFile(name=NAME, size_bytes=300 * 1024 * 1024)]
-
-    async def get_download_links(self, _tid: str) -> list[DownloadLink]:
-        return [DownloadLink(name=NAME, url=URL, size_bytes=self.size)]
-
-    async def get_transfers(self) -> list[DownloaderTransfer]:
-        return [
-            DownloaderTransfer(
-                transfer_id="tb-9000",
-                name="x",
-                state=TransferState.COMPLETED,
-                progress_pct=100.0,
-                folder_id=self.folder,
-            )
-        ]
-
-
-@pytest.fixture(autouse=True)
-def fresh_queue(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(worker, "_queue", None)
-
-
-@pytest.fixture
-def downloader(monkeypatch: pytest.MonkeyPatch):
-    def _set(client: _Client) -> None:
-        async def get(_s: Any, _t: str) -> _Client:
-            return client
-
-        for mod in (worker, engines):
-            monkeypatch.setattr(mod, "get_downloader_client_for_type", get)
-        monkeypatch.setattr(
-            engines,
-            "_client_factory",
-            lambda: httpx.AsyncClient(
-                transport=httpx.MockTransport(
-                    lambda r: httpx.Response(200, content=PAYLOAD)
-                )
-            ),
-        )
-
-    return _set
 
 
 async def _pending(session: AsyncSession, **kw: Any) -> DownloadHistory:
@@ -98,7 +45,7 @@ async def test_cloud_delivery_marks_delivered_and_resets_progress(
         db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
     )
     h = await _pending(db_session)
-    downloader(_Client())
+    downloader(FakeDownloaderClient())
 
     await worker.process_delivery(db_session, h.id)
 
@@ -129,7 +76,7 @@ async def test_aggregate_failure_rules(
     config = {"shows_path": str(tmp_path), **config}
     await make_delivery_provider(db_session, **config)
     h = await _pending(db_session)
-    downloader(_Client(size=size))
+    downloader(FakeDownloaderClient(size=size))
 
     await worker.process_delivery(db_session, h.id)
 
@@ -142,7 +89,7 @@ async def test_inactive_provider_pauses(db_session, downloader) -> None:
     provider = await make_delivery_provider(db_session)
     provider.is_active = False
     h = await _pending(db_session)
-    downloader(_Client())
+    downloader(FakeDownloaderClient())
 
     await worker.process_delivery(db_session, h.id)
 
@@ -159,7 +106,7 @@ async def test_sabnzbd_rows_use_local_link_engine(
     lib = tmp_path / "lib"
     await make_delivery_provider(db_session, shows_path=str(lib))
     h = await _pending(db_session, downloader_type="sabnzbd")
-    downloader(_Client(folder=str(src)))
+    downloader(FakeDownloaderClient(folder=str(src)))
 
     await worker.process_delivery(db_session, h.id)
 
@@ -172,7 +119,7 @@ async def test_sabnzbd_rows_use_local_link_engine(
 async def test_only_pending_rows_are_processed(db_session, downloader) -> None:
     await make_delivery_provider(db_session)
     h = await _pending(db_session, delivery_status="none")
-    downloader(_Client())
+    downloader(FakeDownloaderClient())
 
     await worker.process_delivery(db_session, h.id)
 
@@ -296,7 +243,7 @@ async def test_worker_loop_processes_enqueued_rows(
         db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
     )
     h = await _pending(db_session)
-    downloader(_Client())
+    downloader(FakeDownloaderClient())
 
     await worker.start_delivery_worker()
     try:

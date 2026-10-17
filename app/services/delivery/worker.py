@@ -51,6 +51,63 @@ async def enqueue_delivery(history_id: int) -> None:
     await _get_queue().put(history_id)
 
 
+def _roots(cfg: DeliveryConfig) -> list[Path]:
+    paths = (cfg.movies_path, cfg.shows_path, cfg.anime_path, cfg.anime_movies_path)
+    return [Path(p).resolve() for p in paths if p]
+
+
+def _remove_empty_parents(path: Path, roots: list[Path]) -> None:
+    """Best-effort ``rmdir`` of empty parents, never the library root itself."""
+    parent = path.parent.resolve()
+    while any(parent != r and parent.is_relative_to(r) for r in roots):
+        try:
+            parent.rmdir()
+        except OSError:
+            return
+        parent = parent.parent
+
+
+async def _remove_recorded_files(
+    session: AsyncSession,
+    rows: list[DeliveredFile],
+    cfg: DeliveryConfig,
+) -> None:
+    """Delete the recorded files (and their rows); only files below a library root."""
+    roots = _roots(cfg)
+    for row in rows:
+        dest = Path(row.dest_path) if row.dest_path else None
+        if dest is not None and dest.is_file():
+            if any(dest.resolve().is_relative_to(r) for r in roots):
+                dest.unlink(missing_ok=True)
+                _remove_empty_parents(dest, roots)
+        await session.delete(row)
+    await session.flush()
+
+
+async def _old_slot_rows(
+    session: AsyncSession,
+    history: DownloadHistory,
+    slots: set[tuple[int | None, int | None]],
+) -> list[DeliveredFile]:
+    """Delivered files of the replaced row that occupy one of ``slots``."""
+    if not history.is_upgrade or history.replaces_history_id is None:
+        return []
+    old_rows = (
+        await session.execute(
+            select(DeliveredFile).where(
+                DeliveredFile.history_id == history.replaces_history_id,
+                DeliveredFile.status == "delivered",
+            )
+        )
+    ).scalars()
+    return [
+        r
+        for r in old_rows
+        if (r.episode_id, r.season_id) in slots
+        and (r.episode_id is not None or r.season_id is not None)
+    ]
+
+
 def _reset_progress(history: DownloadHistory) -> None:
     history.progress_pct = 0.0
     history.download_speed_bytes = 0
@@ -99,6 +156,7 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
         history.delivery_error = redact_text(f"{type(exc).__name__}: {exc}")[:200]
     _reset_progress(history)
     await session.commit()
+    await _notify(session, history)
 
 
 async def _deliver(session: AsyncSession, history: DownloadHistory) -> None:
@@ -130,6 +188,20 @@ async def _deliver(session: AsyncSession, history: DownloadHistory) -> None:
     )
     plan = await build_delivery_plan(session, history, files, cfg)
 
+    # Upgrade: an old recorded file at the very path the new one lands on is
+    # removed first (the engine never overwrites).
+    planned_slots = {(p.episode_id, p.season_id) for p in plan if p.status == "pending"}
+    planned_paths = {str(p.dest.full) for p in plan if p.status == "pending"}
+    await _remove_recorded_files(
+        session,
+        [
+            r
+            for r in await _old_slot_rows(session, history, planned_slots)
+            if r.dest_path in planned_paths
+        ],
+        cfg,
+    )
+
     engine: DeliveryEngine
     if history.downloader_type == "sabnzbd":
         engine = LocalLinkEngine()
@@ -159,6 +231,68 @@ async def _deliver(session: AsyncSession, history: DownloadHistory) -> None:
         ).scalars()
     )
     _aggregate(history, rows)
+    if history.delivery_status == DeliveryStatus.DELIVERED.value:
+        await _after_delivered(session, history, rows, cfg)
+
+
+async def _after_delivered(
+    session: AsyncSession,
+    history: DownloadHistory,
+    rows: list[DeliveredFile],
+    cfg: DeliveryConfig,
+) -> None:
+    """Upgrade replace of the old slot files, then optional cloud purge."""
+    delivered = [r for r in rows if r.status == "delivered" and r.dest_path]
+    if (
+        history.is_upgrade
+        and delivered
+        and all(Path(r.dest_path or "").is_file() for r in delivered)
+    ):
+        slots = {(r.episode_id, r.season_id) for r in delivered}
+        await _remove_recorded_files(
+            session, await _old_slot_rows(session, history, slots), cfg
+        )
+    if (
+        cfg.delete_cloud_after_delivery
+        and history.downloader_type != "sabnzbd"
+        and history.downloader_transfer_id
+    ):
+        client = await get_downloader_client_for_type(
+            session, history.downloader_type or ""
+        )
+        try:
+            if client is not None and await client.delete_transfer(
+                history.downloader_transfer_id
+            ):
+                history.status_detail = "deleted"
+        except DownloaderError as exc:
+            logger.warning(
+                "[DELIVERY] cloud purge failed for history %s: %s",
+                history.id,
+                redact_text(str(exc)),
+            )
+
+
+async def _notify(session: AsyncSession, history: DownloadHistory) -> None:
+    """One message per settled row, gated by the delivery notification toggles."""
+    status, error = history.delivery_status, history.delivery_error
+    title = history.media_title or history.nzb_title
+    label = f"{title} ({history.target_label})" if history.target_label else title
+    if status == DeliveryStatus.DELIVERED.value:
+        flag, head, body = "notify_on_delivered", "Delivered to library", label
+    elif status == DeliveryStatus.FAILED.value or (
+        status == DeliveryStatus.PAUSED.value and error == "INSUFFICIENT_STORAGE"
+    ):
+        flag, head = "notify_on_delivery_failed", "Delivery failed"
+        body = f"{label}\n{error or 'unknown error'}"
+    else:
+        return
+    try:
+        from app.services.notifications import dispatch_alert_message
+
+        await dispatch_alert_message(session, flag, head, body)
+    except Exception:
+        logger.exception("[DELIVERY] notification failed for history %s", history.id)
 
 
 async def _worker_loop() -> None:
@@ -199,16 +333,7 @@ async def recover_interrupted_deliveries(session: AsyncSession) -> int:
     roots: list[Path] = []
     if provider is not None:
         cfg = DeliveryConfig.from_provider(provider)
-        roots = [
-            Path(p).resolve()
-            for p in (
-                cfg.movies_path,
-                cfg.shows_path,
-                cfg.anime_path,
-                cfg.anime_movies_path,
-            )
-            if p
-        ]
+        roots = _roots(cfg)
     unfinished = (
         await session.execute(
             select(DeliveredFile.dest_path).where(
