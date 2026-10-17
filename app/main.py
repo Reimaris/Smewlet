@@ -344,10 +344,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     backfill_task = asyncio.create_task(_run_title_backfill())
 
+    # Local directory delivery: single background worker + crash recovery
+    from app.services.delivery.worker import (
+        recover_interrupted_deliveries,
+        start_delivery_worker,
+        stop_delivery_worker,
+    )
+
+    await start_delivery_worker()
+    async with async_session_factory() as session:
+        await recover_interrupted_deliveries(session)
+
     # Yield control to the FastAPI application
     yield
 
     # 3. Shutdown gracefully
+    await stop_delivery_worker()
     if not backfill_task.done():
         backfill_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
