@@ -77,6 +77,10 @@ from app.db.models import (
     Season,
     SeasonStatus,
 )
+from app.services.delivery.hooks import (
+    log_dry_run_delivery_plan,
+    resolve_deliver_enabled,
+)
 from app.services.downloaders.base import (
     BaseDownloader,
     DownloaderError,
@@ -878,6 +882,7 @@ async def _simulate_push_candidate(
     episode: Episode | None = None,
     push_mode: str = "auto",
     event_type: str = "push_initiated",
+    deliver: bool | None = None,
 ) -> DownloadHistory:
     from app.core.transfer_poller import register_dry_run_push
     from app.services import discord
@@ -963,6 +968,7 @@ async def _simulate_push_candidate(
         progress_pct=100.0,
         completed_at=now_utc,
         notification_sent=False,
+        deliver_enabled=await resolve_deliver_enabled(session, deliver),
     )
     history.media_item = item
     if season is not None:
@@ -972,6 +978,8 @@ async def _simulate_push_candidate(
     populate_history_snapshot(history, item, season=season, episode=episode)
     session.add(history)
     await session.commit()
+    if history.deliver_enabled:
+        await log_dry_run_delivery_plan(session, history)
 
     return history
 
@@ -1018,6 +1026,7 @@ async def _dispatch_candidate_list_to_downloader(
     error_out: list[str] | None = None,
     is_upgrade: bool = False,
     replaces_history_id: int | None = None,
+    deliver: bool | None = None,
 ) -> DownloadHistory | dict[str, Any] | None:
     """Iterate through scored candidates, verify Layer 2 NZB fake check, and dispatch to the downloader."""
     is_movie = episode is None and (
@@ -1130,6 +1139,7 @@ async def _dispatch_candidate_list_to_downloader(
                 episode=episode,
                 push_mode=push_mode,
                 event_type=event_type,
+                deliver=deliver,
             )
 
         nzb_password = cand.get("_nzb_password") or extract_nzb_password(nzb_bytes)
@@ -1285,6 +1295,7 @@ async def _dispatch_candidate_list_to_downloader(
             is_upgrade=is_upgrade,
             replaces_history_id=replaces_history_id,
             notification_sent=False,
+            deliver_enabled=await resolve_deliver_enabled(session, deliver),
         )
         history.media_item = item
         if season is not None:

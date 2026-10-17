@@ -1219,6 +1219,7 @@ async def _run_transfer_poller_tick_with_session(
         )
 
     completed_item_ids: set[int] = set()
+    delivery_candidates: list[DownloadHistory] = []
     affected_items: dict[int, MediaItem] = {}
 
     for m in movies:
@@ -1484,6 +1485,8 @@ async def _run_transfer_poller_tick_with_session(
             if history.is_upgrade and history.replaces_history_id:
                 await _finalize_upgrade_replacement(session, history)
             completed_item_ids.add(item.id)
+            if history.deliver_enabled:
+                delivery_candidates.append(history)
             continue
 
         # 1b. Check Expired (Previously completed transfer whose cloud files aged out on the downloader)
@@ -1562,6 +1565,7 @@ async def _run_transfer_poller_tick_with_session(
     await session.commit()
     for completed_id in completed_item_ids:
         schedule_availability_notification(completed_id)
+    await _start_deliveries(session, delivery_candidates)
 
     # Dispatch show-level batch notifications for any show/movie whose active transfers have all settled
     await _dispatch_settled_show_notifications(
@@ -1580,6 +1584,24 @@ async def _run_transfer_poller_tick_with_session(
         "remaining_active": remaining_active,
         "sleeping": not transfer_poller.is_awake,
     }
+
+
+async def _start_deliveries(
+    session: AsyncSession, candidates: list[DownloadHistory]
+) -> None:
+    """Queue local directory delivery for freshly completed rows (delivery provider active)."""
+    if not candidates:
+        return
+    from app.services.delivery.worker import enqueue_delivery
+    from app.services.provider_service import get_active_delivery_provider
+
+    if await get_active_delivery_provider(session) is None:
+        return
+    for history in candidates:
+        history.delivery_status = "pending"
+    await session.commit()
+    for history in candidates:
+        await enqueue_delivery(history.id)
 
 
 async def _handle_transfer_failure(

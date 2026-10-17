@@ -32,6 +32,10 @@ from app.core.rate_limit_queue import (
 )
 from app.db.models import DownloadHistory, Provider
 from app.services import provider_service
+from app.services.delivery.hooks import (
+    log_dry_run_delivery_plan,
+    resolve_deliver_enabled,
+)
 from app.services.downloaders.base import DOWNLOADER_DISPLAY_NAMES, DownloaderError
 from app.services.downloaders.factory import (
     downloader_class,
@@ -570,6 +574,7 @@ async def push_adhoc_release(
     anilist_id: int | None = None,
     season: int | None = None,
     episode: int | None = None,
+    deliver: bool | None = None,
 ) -> AdHocPushOutcome:
     """Send one release to the active downloader and record a detached ad-hoc DownloadHistory row.
 
@@ -730,6 +735,7 @@ async def push_adhoc_release(
         is_fallback=is_fallback,
         grabbed_language=matched_language or None,
         notification_sent=False,
+        deliver_enabled=await resolve_deliver_enabled(session, deliver),
     )
     if settings.dry_run:
         from app.core.transfer_poller import register_dry_run_push
@@ -756,6 +762,8 @@ async def push_adhoc_release(
         history.is_dry_run = False
     session.add(history)
     await session.commit()
+    if settings.dry_run and history.deliver_enabled:
+        await log_dry_run_delivery_plan(session, history)
     logger.info(
         "%s ad-hoc push: '%s' (%s, score=%s, size=%s B, hash=%s)",
         "[DRY RUN] Simulated" if settings.dry_run else "Sent",

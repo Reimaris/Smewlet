@@ -308,3 +308,110 @@ async def test_worker_loop_processes_enqueued_rows(
     db_session.expire_all()
     await db_session.refresh(h)
     assert h.delivery_status == "delivered"
+
+
+# ---------------------------------------------------------------------------
+# Completion hooks and dry-run (m78-10)
+# ---------------------------------------------------------------------------
+
+
+async def _complete_via_poller(
+    session: AsyncSession, *, deliver_enabled: bool, provider_active: bool
+) -> DownloadHistory:
+    from app.core.transfer_poller import run_transfer_poller_tick
+    from app.db.models import MediaStatus
+    from tests.conftest import make_movie
+
+    provider = await make_delivery_provider(session, movies_path="/lib/movies")
+    provider.is_active = provider_active
+    movie = await make_movie(
+        session, title="Example Film", year=2020, status=MediaStatus.DOWNLOADING
+    )
+    history = await make_history(
+        session,
+        item=movie,
+        downloader_transfer_id="99001",
+        nzb_guid="guid-complete",
+        status_detail="downloading",
+        is_dismissed=False,
+        deliver_enabled=deliver_enabled,
+    )
+    await session.commit()
+    snapshot = [
+        {
+            "id": 99001,
+            "name": "Example.Film.2020.1080p.WEB-DL-GRP",
+            "download_state": "completed",
+            "download_finished": True,
+            "progress": 1.0,
+            "download_speed": 0,
+            "eta": 0,
+            "files": [
+                {"name": "Example.Film.2020.1080p.WEB-DL-GRP.mkv", "size": 4 * 1024**3}
+            ],
+        }
+    ]
+    await run_transfer_poller_tick(session, pre_fetched_downloads=snapshot)
+    await session.refresh(history)
+    return history
+
+
+@pytest.mark.parametrize(
+    ("deliver_enabled", "provider_active", "queued"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+async def test_poller_completion_enqueues_only_when_enabled_and_active(
+    deliver_enabled, provider_active, queued, db_session
+) -> None:
+    history = await _complete_via_poller(
+        db_session, deliver_enabled=deliver_enabled, provider_active=provider_active
+    )
+
+    assert history.status_detail == "completed"
+    assert history.delivery_status == ("pending" if queued else "none")
+    queue = worker._get_queue()
+    assert queue.qsize() == (1 if queued else 0)
+    if queued:
+        assert queue.get_nowait() == history.id
+
+
+@pytest.mark.parametrize(
+    ("active", "explicit", "expected"),
+    [
+        (True, None, True),
+        (False, None, False),
+        (True, False, False),
+        (False, True, True),
+    ],
+)
+async def test_resolve_deliver_enabled(active, explicit, expected, db_session) -> None:
+    from app.services.delivery.hooks import resolve_deliver_enabled
+
+    provider = await make_delivery_provider(db_session)
+    provider.is_active = active
+    await db_session.flush()
+
+    assert await resolve_deliver_enabled(db_session, explicit) is expected
+
+
+async def test_dry_run_plan_is_logged_without_writing(
+    db_session, caplog, tmp_path
+) -> None:
+    from app.services.delivery.hooks import log_dry_run_delivery_plan
+
+    await make_delivery_provider(db_session, shows_path=str(tmp_path))
+    h = await _pending(
+        db_session,
+        delivery_status="none",
+        nzb_title="Example.Show.S01E02.1080p.WEB-DL-GRP",
+    )
+
+    with caplog.at_level("INFO"):
+        await log_dry_run_delivery_plan(db_session, h)
+
+    assert "[DELIVERY] [DRY RUN]" in caplog.text
+    assert "Example Show - S01E02.mkv" in caplog.text
+    assert list(tmp_path.iterdir()) == []
+    await db_session.refresh(h)
+    assert h.delivery_status == "none"
+    assert (await db_session.execute(select(DeliveredFile))).first() is None
