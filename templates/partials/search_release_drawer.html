@@ -7,9 +7,18 @@
         </span>
         <div class="flex items-center gap-2">
             <span id="{{ drawer_id }}-auto-status"></span>
+            {% if delivery_provider_exists %}
+            <span id="{{ drawer_id }}-deliver" class="inline-flex items-center">
+                <input type="hidden" name="deliver" value="false">
+                <label class="inline-flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                    <input type="checkbox" name="deliver" value="true" {% if delivery_provider_active %}checked{% endif %} class="accent-[#d40060]">
+                    Deliver to Library
+                </label>
+            </span>
+            {% endif %}
             <button type="button"
                     hx-post="/api/search/manual/auto-push" hx-target="#{{ drawer_id }}-auto-status" hx-swap="innerHTML"
-                    hx-include="#manual-search-form" hx-vals='{{ auto_push_vals | tojson }}'
+                    hx-include="#manual-search-form{% if delivery_provider_exists %}, #{{ drawer_id }}-deliver{% endif %}" hx-vals='{{ auto_push_vals | tojson }}'
                     class="px-2.5 py-1 bg-[#d40060] hover:bg-[#a3004a] text-white rounded-md text-xs font-medium">Auto-Push Best</button>
             <button type="button" @click="document.getElementById('{{ drawer_id }}').innerHTML = ''; searched = false"
                     class="px-2.5 py-1 bg-[#2a2a32] hover:bg-[#33333b] text-white border border-[#3f3f46] rounded-md text-xs">Close</button>

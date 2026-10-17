@@ -78,6 +78,7 @@ from app.db.models import (
     SeasonStatus,
 )
 from app.services.delivery.hooks import (
+    delivery_toggle_context,
     log_dry_run_delivery_plan,
     resolve_deliver_enabled,
 )
@@ -3572,4 +3573,5 @@ async def get_push_modal_context(
         "auto_push_episodes": bool(item.auto_push_episodes),
         "can_auto_advance": bool(effective_cfg.get("can_auto_advance", True)),
         "auto_advance_unavailable_message": AUTO_ADVANCE_UNAVAILABLE_MESSAGE,
+        **await delivery_toggle_context(session),
     }

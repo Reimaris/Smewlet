@@ -24,6 +24,7 @@
         excludedKeywords: {{ ((effective_config.custom_config.get("excluded_keywords") or []) | join(", ")) | tojson }},
         selectedSeasons: {{ (default_selected_season_ids if default_selected_season_ids is defined else []) | tojson }},
         selectedEpisodes: [],
+        deliver: {{ (true if delivery_provider_active else false) | tojson }},
         expandedSeasons: {},
         showSavePresetForm: false,
         newPresetName: "",
@@ -99,6 +100,7 @@
                 allow_season_packs: this.allowSeasonPacks,
                 prefer_season_packs: this.allowSeasonPacks ? this.preferSeasonPacks : false,
                 auto_advance_seasons: this.autoAdvanceSeasons,
+                deliver: this.deliver,
                 season_ids: this.selectedSeasons,
                 episode_ids: this.selectedEpisodes,
                 custom_config: {
@@ -215,7 +217,8 @@
                 matched_language: rel.matched_language || null,
                 season_id: seasonId,
                 episode_id: episodeId,
-                auto_advance_seasons: this.autoAdvanceSeasons
+                auto_advance_seasons: this.autoAdvanceSeasons,
+                deliver: this.deliver
             };
             const resp = await fetch("/api/items/{{ item.id }}/push/manual-grab", {
                 method: "POST",
@@ -986,6 +989,15 @@
                 </div>
             </div>
         </div>
+
+        {% if delivery_provider_exists %}
+        <div class="px-4 sm:px-6 py-2 bg-[#2a2a32] border-t border-[#3f3f46] shrink-0">
+            <label class="inline-flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
+                <input type="checkbox" name="deliver" x-model="deliver" class="accent-[#d40060]">
+                Deliver to Library
+            </label>
+        </div>
+        {% endif %}
 
         <!-- 5. Sticky Footer Action Bar (Search & Pick Manually / Auto-Push Best) -->
         <div class="p-2.5 sm:px-6 sm:py-4 pb-[max(0.625rem,env(safe-area-inset-bottom))] bg-[#2a2a32] border-t border-[#3f3f46] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 shrink-0">

@@ -1106,10 +1106,16 @@ async def manual_search_releases(
         fallback = result.fallback_results
         mismatched = result.mismatched_results
 
+    from app.services.delivery.hooks import delivery_toggle_context
+
+    async with async_session_factory() as session:
+        delivery_ctx = await delivery_toggle_context(session)
+
     return templates.TemplateResponse(
         request=request,
         name="partials/search_release_drawer.html",
         context={
+            **delivery_ctx,
             "drawer_id": drawer_id,
             "scope": scope,
             "primary_results": primary,
@@ -1149,6 +1155,9 @@ async def manual_search_releases(
                 "episode": episode_n if episode_n is not None else "",
             },
             "push_context": {
+                "deliver_scope": f"{drawer_id}-deliver"
+                if delivery_ctx["delivery_provider_exists"]
+                else "",
                 "media_title": title,
                 "media_year": year,
                 "media_kind": kind,
@@ -1345,9 +1354,11 @@ async def manual_push_adhoc(
     anilist_id: str = Form(""),
     season: str = Form(""),
     episode: str = Form(""),
+    deliver: str = Form(""),
 ):
     """Dispatch one ad-hoc release to the active downloader and record a detached history row."""
     from app.core.adhoc_search import push_adhoc_release
+    from app.services.delivery.hooks import parse_deliver
 
     async with async_session_factory() as session:
         outcome = await push_adhoc_release(
@@ -1368,6 +1379,7 @@ async def manual_push_adhoc(
             anilist_id=_opt_int(anilist_id),
             season=_opt_int(season),
             episode=_opt_int(episode),
+            deliver=parse_deliver(deliver),
         )
     return _status_span(outcome.message, outcome.ok, outcome.status_code)
 
@@ -1395,6 +1407,7 @@ async def manual_auto_push(
     audio_tier: str = Form("any"),
     audio_channels: str = Form("any"),
     limit: int = Form(10),
+    deliver: str = Form(""),
 ):
     """Search one scope and push the best primary (else fallback) release."""
     from app.core.adhoc_search import (
@@ -1402,6 +1415,7 @@ async def manual_auto_push(
         push_adhoc_release,
         search_and_score_releases,
     )
+    from app.services.delivery.hooks import parse_deliver
 
     title = title.strip()
     season_n, episode_n = _opt_int(season), _opt_int(episode)
@@ -1465,6 +1479,7 @@ async def manual_auto_push(
             imdb_id=imdb_id or None,
             season=season_n if scope != "item" else None,
             episode=episode_n if scope == "episode" else None,
+            deliver=parse_deliver(deliver),
         )
     if not outcome.ok:
         return _status_span(outcome.message, False, outcome.status_code)
@@ -5109,7 +5124,9 @@ async def _run_background_auto_push(item_id: int, payload: dict[str, Any]) -> No
     from app.core.search_lock import item_lock_manager
     from app.core.transfer_poller import count_downloading_entities, transfer_poller
     from app.db.database import async_session_factory
+    from app.services.delivery.hooks import deliver_from_payload, deliver_override
 
+    deliver_override.set(deliver_from_payload(payload))
     try:
         async with async_session_factory() as session:
             await execute_auto_push(session, item_id, payload)
@@ -5231,9 +5248,15 @@ async def api_push_item_manual_grab(item_id: int, request: Request) -> Response:
         )
 
     try:
+        from app.services.delivery.hooks import deliver_from_payload, deliver_override
+
         payload = await _parse_request_payload(request)
-        async with async_session_factory() as session:
-            result = await execute_manual_grab(session, item_id, payload)
+        token = deliver_override.set(deliver_from_payload(payload))
+        try:
+            async with async_session_factory() as session:
+                result = await execute_manual_grab(session, item_id, payload)
+        finally:
+            deliver_override.reset(token)
         status_code = int(result.pop("status_code", 200))
         return JSONResponse(status_code=status_code, content=result)
     finally:
