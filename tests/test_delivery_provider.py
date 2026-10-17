@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,9 +13,12 @@ from app.db.models import (
     DeliveredFile,
     DeliveryStatus,
     DownloadHistory,
+    Provider,
     ProviderCategory,
     SystemSettings,
 )
+from app.services import provider_service
+from app.services.delivery.config import DeliveryConfig, validate_templates
 from tests.conftest import make_delivery_provider, make_history, make_movie
 
 HISTORY_COLUMNS = (
@@ -108,3 +112,63 @@ async def test_migration_adds_columns_and_is_idempotent(tmp_path: Path) -> None:
         assert "dest_path" in await _columns("delivered_files")
         await close_db()
     await init_db(url)
+
+
+def _cfg(raw: str) -> DeliveryConfig:
+    return DeliveryConfig.from_provider(Provider(config_json=raw))
+
+
+def test_config_defaults_for_empty_json() -> None:
+    cfg = _cfg("{}")
+    assert cfg == DeliveryConfig()
+    assert cfg.movies_path == ""
+    assert cfg.min_free_buffer_bytes == 5368709120
+    assert cfg.delete_cloud_after_delivery is False
+    assert cfg.delivery_max_parallel == 1
+    assert validate_templates(cfg) == []
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", "null", ""])
+def test_config_malformed_json_uses_defaults(raw: str) -> None:
+    assert _cfg(raw) == DeliveryConfig()
+
+
+def test_config_wrong_types_coerce_and_valid_values_kept() -> None:
+    cfg = _cfg(
+        '{"movies_path": 5, "shows_path": "/tv", "min_free_buffer_bytes": "x",'
+        ' "delete_cloud_after_delivery": 1, "anime_template": null}'
+    )
+    assert cfg.movies_path == ""
+    assert cfg.shows_path == "/tv"
+    assert cfg.min_free_buffer_bytes == 5368709120
+    assert cfg.delete_cloud_after_delivery is False
+    assert cfg.anime_template == DeliveryConfig().anime_template
+
+
+def test_config_max_parallel_pinned_to_one() -> None:
+    assert _cfg('{"delivery_max_parallel": 5}').delivery_max_parallel == 1
+
+
+def test_validate_templates_reports_unknown_placeholders() -> None:
+    cfg = _cfg(
+        '{"movie_template": "{foo}/{title}.{ext}", "show_template": "{bar:02d}{foo}"}'
+    )
+    assert validate_templates(cfg) == ["bar", "foo"]
+
+
+async def test_second_delivery_provider_rejected(db_session: AsyncSession) -> None:
+    first = await provider_service.create_delivery_provider(db_session)
+    assert first.is_active is False
+    with pytest.raises(
+        provider_service.DeliveryProviderExistsError, match="already exists"
+    ):
+        await provider_service.create_delivery_provider(db_session)
+
+
+async def test_inactive_delivery_provider_lookup(db_session: AsyncSession) -> None:
+    assert await provider_service.get_delivery_provider(db_session) is None
+    provider = await provider_service.create_delivery_provider(db_session)
+    assert await provider_service.get_delivery_provider(db_session) is provider
+    assert await provider_service.get_active_delivery_provider(db_session) is None
+    provider.is_active = True
+    assert await provider_service.get_active_delivery_provider(db_session) is provider

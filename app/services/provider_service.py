@@ -20,6 +20,15 @@ _active_name = "TorBox"
 
 _METADATA_TYPES: frozenset[str] = frozenset({"tmdb"})
 
+DELIVERY_TYPES: frozenset[str] = frozenset({"local_directory"})
+
+
+class DeliveryProviderExistsError(Exception):
+    """Raised when a second delivery provider is created (routes map this to HTTP 409)."""
+
+    def __init__(self) -> None:
+        super().__init__("A delivery provider already exists")
+
 
 def provider_category_for_type(type: str) -> str:
     """Map a provider type to its category value; unknown types raise ``ValueError``."""
@@ -36,6 +45,8 @@ def provider_category_for_type(type: str) -> str:
         return ProviderCategory.INDEXER.value
     if t in _METADATA_TYPES:
         return ProviderCategory.METADATA.value
+    if t in DELIVERY_TYPES:
+        return ProviderCategory.DELIVERY.value
     raise ValueError(f"Unknown provider type: {type!r}")
 
 
@@ -171,3 +182,37 @@ async def get_providers_by_category(
     )
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+async def get_delivery_provider(db: AsyncSession) -> Provider | None:
+    """Retrieve the single delivery provider row (active or not)."""
+    stmt = (
+        select(Provider)
+        .where(Provider.category == ProviderCategory.DELIVERY.value)
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def get_active_delivery_provider(db: AsyncSession) -> Provider | None:
+    """Retrieve the delivery provider only when it is active."""
+    provider = await get_delivery_provider(db)
+    return provider if provider is not None and provider.is_active else None
+
+
+async def create_delivery_provider(
+    db: AsyncSession, *, name: str = "Local directory", config_json: str = "{}"
+) -> Provider:
+    """Create the delivery provider (inactive); raises if one already exists."""
+    if await get_delivery_provider(db) is not None:
+        raise DeliveryProviderExistsError()
+    provider = Provider(
+        name=name,
+        type="local_directory",
+        category=ProviderCategory.DELIVERY.value,
+        is_active=False,
+        config_json=config_json,
+    )
+    db.add(provider)
+    await db.flush()
+    return provider
