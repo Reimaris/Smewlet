@@ -111,6 +111,7 @@
                     {% elif cat == 'metadata' %}border-amber-500/50 hover:border-amber-400
                     {% elif cat == 'downloader' %}border-purple-500/50 hover:border-purple-400
                     {% elif cat == 'indexer' %}border-blue-500/50 hover:border-blue-400
+                    {% elif cat == 'delivery' %}border-emerald-500/50 hover:border-emerald-400
                     {% else %}border-[#3f3f46] hover:border-zinc-400{% endif %}">
 
                     <div>
@@ -125,6 +126,8 @@
                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-purple-500/15 text-purple-400 border border-purple-500/30">Downloader</span>
                                 {% elif cat == 'indexer' %}
                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-blue-500/15 text-blue-400 border border-blue-500/30">Indexer</span>
+                                {% elif cat == 'delivery' %}
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">Delivery</span>
                                 {% else %}
                                 <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold tracking-wide uppercase bg-zinc-500/15 text-zinc-400 border border-zinc-500/30">{{ cat|capitalize }}</span>
                                 {% endif %}
@@ -163,6 +166,7 @@
                                 {% elif cat == 'metadata' %}bg-amber-500/15 border border-amber-500/30 text-amber-400
                                 {% elif cat == 'downloader' %}bg-purple-500/15 border border-purple-500/30 text-purple-400
                                 {% elif cat == 'indexer' %}{{ idx_color_classes[idx_preset.color if idx_preset else 'zinc'] }}
+                                {% elif cat == 'delivery' %}bg-emerald-500/15 border border-emerald-500/30 text-emerald-400
                                 {% else %}bg-zinc-700 text-zinc-300{% endif %}">
                                 {% if cat == 'watchlist' %}{{ provider.name[:1]|upper }}
                                 {% elif cat == 'downloader' %}{{ {'torbox': 'TB', 'sabnzbd': 'SB', 'premiumize': 'PM'}.get(provider.type, provider.name[:2]|upper) }}
@@ -234,6 +238,8 @@
                             <span class="text-xs text-[#a1a1aa] font-mono truncate max-w-[170px]" title="{{ dl_url }}">
                                 {{ dl_url }}
                             </span>
+                            {% elif cat == 'delivery' %}
+                            <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Local directory</span>
                             {% elif cat == 'metadata' %}
                             <span class="text-xs text-[#a1a1aa] font-mono truncate">
                                 {{ 'Key: ••••••••' if provider.api_key else (provider.username or 'Connected') }}
@@ -532,6 +538,42 @@
                         <span class="flex flex-col">
                             <span class="text-xs text-white font-medium">Notify on Service Outages &amp; Retries</span>
                             <span class="text-[11px] text-zinc-500">Alert on each outage pause and resume. Off: only the final failure after 5 attempts alerts you.</span>
+                        </span>
+                    </label>
+<label class="flex items-center gap-2.5 p-3 rounded-lg bg-[#111115] border border-[#3f3f46] cursor-pointer hover:border-zinc-500 transition-colors">
+                        <span class="relative inline-flex shrink-0">
+<input type="checkbox"
+                               name="notify_on_delivery_failed"
+                               value="true"
+                               {% if not db_settings or db_settings.notify_on_delivery_failed %}checked{% endif %}
+                               hx-post="/settings/auto-save"
+                               hx-trigger="change"
+                               hx-vals='js:{"notify_on_delivery_failed": event.target.checked ? "true" : "false"}'
+                               hx-swap="none"
+                               class="sr-only peer">
+<div class="w-9 h-5 bg-[#3f3f46] peer-focus:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#d40060] rounded-full peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#d40060]"></div>
+</span>
+                        <span class="flex flex-col">
+                            <span class="text-xs text-white font-medium">Notify on Delivery Failures</span>
+                            <span class="text-[11px] text-zinc-500">Alert when delivering a finished download to your library fails.</span>
+                        </span>
+                    </label>
+<label class="flex items-center gap-2.5 p-3 rounded-lg bg-[#111115] border border-[#3f3f46] cursor-pointer hover:border-zinc-500 transition-colors">
+                        <span class="relative inline-flex shrink-0">
+<input type="checkbox"
+                               name="notify_on_delivered"
+                               value="true"
+                               {% if db_settings and db_settings.notify_on_delivered %}checked{% endif %}
+                               hx-post="/settings/auto-save"
+                               hx-trigger="change"
+                               hx-vals='js:{"notify_on_delivered": event.target.checked ? "true" : "false"}'
+                               hx-swap="none"
+                               class="sr-only peer">
+<div class="w-9 h-5 bg-[#3f3f46] peer-focus:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#d40060] rounded-full peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#d40060]"></div>
+</span>
+                        <span class="flex flex-col">
+                            <span class="text-xs text-white font-medium">Notify on Successful Delivery</span>
+                            <span class="text-[11px] text-zinc-500">Alert each time a download lands in your library.</span>
                         </span>
                     </label>
                 </div>

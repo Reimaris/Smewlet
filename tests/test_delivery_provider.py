@@ -172,3 +172,160 @@ async def test_inactive_delivery_provider_lookup(db_session: AsyncSession) -> No
     assert await provider_service.get_active_delivery_provider(db_session) is None
     provider.is_active = True
     assert await provider_service.get_active_delivery_provider(db_session) is provider
+
+
+# --- Settings routes (m78-12) -------------------------------------------------
+
+
+async def _save_delivery(client, **data):  # type: ignore[no-untyped-def]
+    base = {"name": "Local directory", "provider_type": "local_directory"}
+    return await client.post("/settings/provider", data={**base, **data})
+
+
+async def _delivery_row(session: AsyncSession) -> Provider:
+    session.expire_all()
+    provider = await provider_service.get_delivery_provider(session)
+    assert provider is not None
+    return provider
+
+
+async def test_create_delivery_provider_inactive_and_persists_config(
+    async_client, db_session: AsyncSession, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    movies = tmp_path / "movies"
+    resp = await _save_delivery(
+        async_client,
+        is_active="true",  # creation forces inactive
+        movies_path=str(movies),
+        min_free_buffer_gb="2",
+        delete_cloud_after_delivery="true",
+        sab_path_map_remote="/downloads",
+        sab_path_map_local="/mnt/dl",
+    )
+    assert resp.status_code == 200
+    provider = await _delivery_row(db_session)
+    assert provider.is_active is False
+    assert provider.category == "delivery"
+    cfg = DeliveryConfig.from_provider(provider)
+    assert cfg.movies_path == str(movies)
+    assert cfg.min_free_buffer_bytes == 2 * 1024**3
+    assert cfg.delete_cloud_after_delivery is True
+    assert (cfg.sab_path_map_remote, cfg.sab_path_map_local) == (
+        "/downloads",
+        "/mnt/dl",
+    )
+    assert cfg.show_template == DeliveryConfig().show_template
+
+
+async def test_edit_delivery_provider_can_activate(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    provider = await make_delivery_provider(db_session, movies_path="/old")
+    provider.is_active = False
+    await db_session.commit()
+    resp = await async_client.post(
+        f"/settings/provider/{provider.id}",
+        data={
+            "name": "Local directory",
+            "provider_type": "local_directory",
+            "is_active": "true",
+            "movies_path": "/new",
+        },
+    )
+    assert resp.status_code == 200
+    row = await _delivery_row(db_session)
+    assert row.is_active is True
+    assert DeliveryConfig.from_provider(row).movies_path == "/new"
+
+
+async def test_second_delivery_provider_returns_409(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    await make_delivery_provider(db_session)
+    await db_session.commit()
+    resp = await _save_delivery(async_client)
+    assert resp.status_code == 409
+    assert "A delivery provider already exists" in resp.text
+
+
+async def test_unknown_placeholder_returns_422(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    resp = await _save_delivery(async_client, movie_template="{foo}/{title}.{ext}")
+    assert resp.status_code == 422
+    assert "foo" in resp.text
+    assert await provider_service.get_delivery_provider(db_session) is None
+
+
+@pytest.mark.parametrize("field", ["movies_path", "shows_path", "anime_path"])
+async def test_relative_path_returns_422(async_client, field: str) -> None:  # type: ignore[no-untyped-def]
+    resp = await _save_delivery(async_client, **{field: "relative/dir"})
+    assert resp.status_code == 422
+    assert "absolute" in resp.text
+
+
+async def test_test_endpoint_reports_per_path(async_client, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    good = tmp_path / "ok"
+    good.mkdir()
+    missing = tmp_path / "missing"
+    resp = await async_client.post(
+        "/api/providers/test",
+        data={
+            "provider_type": "local_directory",
+            "movies_path": str(good),
+            "shows_path": str(missing),
+        },
+    )
+    body = resp.json()
+    assert body["ok"] is False
+    paths = {p["field"]: p for p in body["paths"]}
+    assert paths["movies_path"]["ok"] is True
+    assert paths["shows_path"]["ok"] is False
+    assert list(good.iterdir()) == []  # temp probe file removed
+    assert "anime_path" not in paths  # unconfigured paths are skipped
+
+
+async def test_test_endpoint_without_paths_fails(async_client) -> None:  # type: ignore[no-untyped-def]
+    resp = await async_client.post(
+        "/api/providers/test", data={"provider_type": "local_directory"}
+    )
+    assert resp.json()["ok"] is False
+
+
+async def test_delivery_notification_toggles_persist(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    resp = await async_client.post(
+        "/settings/auto-save",
+        data={"notify_on_delivery_failed": "false", "notify_on_delivered": "true"},
+    )
+    assert resp.status_code == 200
+    db_session.expire_all()
+    settings = (await db_session.execute(select(SystemSettings))).scalars().one()
+    assert settings.notify_on_delivery_failed is False
+    assert settings.notify_on_delivered is True
+
+
+async def test_settings_page_and_modal_expose_delivery(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    modal = (await async_client.get("/settings/provider/new")).text
+    assert "selectProvider('local_directory', 'delivery'" in modal
+    await make_delivery_provider(db_session, movies_path="/m")
+    await db_session.commit()
+    page = (await async_client.get("/settings")).text
+    assert "Delivery" in page
+    assert 'name="notify_on_delivered"' in page
+    assert 'name="notify_on_delivery_failed"' in page
+
+
+async def test_edit_modal_prefills_delivery_config(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    provider = await make_delivery_provider(
+        db_session, movies_path="/data/films", min_free_buffer_bytes=2 * 1024**3
+    )
+    await db_session.commit()
+    html = (await async_client.get(f"/settings/provider/{provider.id}/edit")).text
+    assert 'value="/data/films"' in html
+    assert 'name="min_free_buffer_gb" value="2"' in html

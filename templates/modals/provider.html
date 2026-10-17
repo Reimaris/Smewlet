@@ -212,6 +212,25 @@
                     </div>
                 </div>
 
+                <!-- Delivery Section -->
+                {% if not delivery_provider %}
+                <div class="space-y-3">
+                    <h3 class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Delivery Providers</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <button type="button" @click="selectProvider('local_directory', 'delivery', 'Local directory')" class="bg-[#111115] hover:bg-[#2a2a32] border border-[#3f3f46] hover:border-emerald-400 rounded-xl p-4 text-left transition-all group flex flex-col justify-between">
+                            <div class="flex items-center gap-3 mb-2">
+                                <div class="w-10 h-10 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-lg">D</div>
+                                <div>
+                                    <div class="font-bold text-white group-hover:text-emerald-400 transition-colors">Local directory</div>
+                                    <div class="text-xs text-[#a1a1aa]">Library Delivery</div>
+                                </div>
+                            </div>
+                            <p class="text-xs text-[#71717a] mt-1">Deliver finished downloads into your media library folders with templated names.</p>
+                        </button>
+                    </div>
+                </div>
+                {% endif %}
+
                 <!-- Indexer Section -->
                 <div class="space-y-3">
                     <h3 class="text-xs font-bold text-blue-400 uppercase tracking-wider">Indexer Providers</h3>
@@ -237,7 +256,7 @@
                 {% for _cat, _caps in capabilities_by_category().items() %}{% for _cap in _caps %}
                 <div x-show="providerType === '{{ _cap.provider_type }}'" x-cloak class="mb-4">{{ capability_pills(_cap.provider_type, show_limitations=True) }}</div>
                 {% endfor %}{% endfor %}
-                <form id="provider-form" hx-post="/settings/provider{% if provider %}/{{ provider.id }}{% endif %}" hx-target="#provider-form-status" hx-swap="innerHTML" hx-on::before-swap="if (event.detail.xhr.status === 422) { event.detail.shouldSwap = true; event.detail.isError = false; }" class="space-y-6">
+                <form id="provider-form" hx-post="/settings/provider{% if provider %}/{{ provider.id }}{% endif %}" hx-target="#provider-form-status" hx-swap="innerHTML" hx-on::before-swap="if (event.detail.xhr.status === 422 || event.detail.xhr.status === 409) { event.detail.shouldSwap = true; event.detail.isError = false; }" class="space-y-6">
                     <input type="hidden" name="provider_type" :value="providerType" value="{{ ptype }}">
                     <input type="hidden" name="category" :value="providerCategory" value="{{ pcat }}">
 
@@ -570,14 +589,86 @@
                         </div>
                     </fieldset>
 
+                    <!-- LOCAL DIRECTORY DELIVERY CONFIGURATION -->
+                    {% set dcfg = delivery_config if delivery_config else {} %}
+                    <fieldset :disabled="providerType !== 'local_directory'" x-show="providerType === 'local_directory'" class="border-0 p-0 m-0 space-y-6">
+                        <p class="text-xs text-[#a1a1aa]">Absolute paths as seen by this container. Leave a path empty to skip that media type.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Movies path</label>
+                                <input type="text" name="movies_path" value="{{ dcfg.movies_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/movies">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Shows path</label>
+                                <input type="text" name="shows_path" value="{{ dcfg.shows_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/tv">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime path</label>
+                                <input type="text" name="anime_path" value="{{ dcfg.anime_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/anime">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime movies path</label>
+                                <input type="text" name="anime_movies_path" value="{{ dcfg.anime_movies_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/anime-movies">
+                            </div>
+                            <div class="flex flex-col md:col-span-2">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Movie template</label>
+                                <input type="text" name="movie_template" value="{{ dcfg.movie_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{title} ({year})/{title} ({year}) [{resolution} {source}].{ext}">
+                            </div>
+                            <div class="flex flex-col md:col-span-2">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Show template</label>
+                                <input type="text" name="show_template" value="{{ dcfg.show_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{episode:02d} - {episode_title}.{ext}">
+                            </div>
+                            <div class="flex flex-col md:col-span-2">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime template</label>
+                                <input type="text" name="anime_template" value="{{ dcfg.anime_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{entry_title} ({year})/Season 01/{entry_title} - S01E{episode:02d} - {episode_title}.{ext}">
+                            </div>
+                            <div class="flex flex-col md:col-span-2">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime movie template</label>
+                                <input type="text" name="anime_movie_template" value="{{ dcfg.anime_movie_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{entry_title} ({year})/{entry_title} ({year}) [{resolution} {source}].{ext}">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Free-space buffer (GB, 0 = off)</label>
+                                <input type="text" name="min_free_buffer_gb" value="{{ dcfg.min_free_buffer_gb if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="5">
+                            </div>
+                            <div></div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">SABnzbd path map: remote prefix</label>
+                                <input type="text" name="sab_path_map_remote" value="{{ dcfg.sab_path_map_remote if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/downloads">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">SABnzbd path map: local prefix</label>
+                                <input type="text" name="sab_path_map_local" value="{{ dcfg.sab_path_map_local if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/mnt/downloads">
+                            </div>
+                            <label class="inline-flex items-center gap-2 text-sm text-white cursor-pointer md:col-span-2">
+                                <span class="relative inline-flex shrink-0">
+<input type="checkbox" name="delete_cloud_after_delivery" value="true" {% if dcfg.delete_cloud_after_delivery %}checked{% endif %} class="sr-only peer">
+<div class="w-9 h-5 bg-[#3f3f46] peer-focus:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#d40060] rounded-full peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#d40060]"></div>
+</span>
+                                <span>Delete the cloud copy after successful delivery</span>
+                            </label>
+                            <label class="inline-flex items-center gap-2 text-sm text-white cursor-pointer md:col-span-2">
+                                <span class="relative inline-flex shrink-0">
+<input type="checkbox" name="is_active" value="true" {% if provider and provider.is_active %}checked{% endif %} class="sr-only peer">
+<div class="w-9 h-5 bg-[#3f3f46] peer-focus:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#d40060] rounded-full peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#d40060]"></div>
+</span>
+                                <span>Active{% if not provider %} (enable after saving){% endif %}</span>
+                            </label>
+                        </div>
+                    </fieldset>
+
                     <!-- Downloader connection test -->
-                    <div x-show="providerCategory === 'downloader'" x-data="{ result: null, busy: false }" class="flex items-center gap-3">
+                    <div x-show="['downloader', 'delivery'].includes(providerCategory)" x-data="{ result: null, busy: false }" class="flex items-center gap-3">
                         <button type="button" :disabled="busy"
                                 @click="busy = true; result = null; fetch('/api/providers/test', {method: 'POST', body: new URLSearchParams(new FormData(document.getElementById('provider-form')))}).then(r => r.json()).then(j => result = j).catch(() => result = {ok: false, message: 'Request failed'}).finally(() => busy = false)"
                                 class="px-4 py-2 bg-[#3f3f46] hover:bg-[#52525b] text-white rounded-lg font-medium transition-colors text-sm">
                             Test Connection
                         </button>
                         <span x-show="result" x-text="result && result.message" :class="result && result.ok ? 'text-green-400' : 'text-red-400'" class="text-sm"></span>
+                        <ul x-show="result && result.paths && result.paths.length" class="text-xs font-mono space-y-0.5">
+                            <template x-for="p in (result && result.paths) || []" :key="p.field">
+                                <li :class="p.ok ? 'text-green-400' : 'text-red-400'" x-text="p.path + ' — ' + p.detail"></li>
+                            </template>
+                        </ul>
                     </div>
 
                     <div id="provider-form-status"></div>

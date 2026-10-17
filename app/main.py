@@ -13,6 +13,7 @@ import contextlib
 import html
 import json
 import logging
+import os
 import re
 import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
@@ -1632,7 +1633,13 @@ async def get_settings_page(request: Request):
         raw_providers = (await session.execute(select(Provider))).scalars().all()
         downloader_name = await _active_downloader_name(session)
 
-        category_order = {"watchlist": 0, "metadata": 1, "downloader": 2, "indexer": 3}
+        category_order = {
+            "watchlist": 0,
+            "metadata": 1,
+            "downloader": 2,
+            "indexer": 3,
+            "delivery": 4,
+        }
 
         def provider_sort_key(p: Provider) -> tuple[int, int, str]:
             cat = p.category.value if hasattr(p.category, "value") else str(p.category)
@@ -1686,6 +1693,9 @@ async def get_settings_page(request: Request):
             "notifications": notifications,
             "blacklisted_releases": blacklisted_releases,
             "downloader_name": downloader_name,
+            "delivery_provider": next(
+                (p for p in providers if p.category == "delivery"), None
+            ),
         },
     )
 
@@ -1787,6 +1797,10 @@ async def save_global_settings(request: Request):
         if "notify_on_outages" in payload:
             db_settings.notify_on_outages = _to_bool(payload.get("notify_on_outages"))
 
+        for flag in ("notify_on_delivery_failed", "notify_on_delivered"):
+            if flag in payload:
+                setattr(db_settings, flag, _to_bool(payload.get(flag)))
+
         if "debug_mode" in payload:
             db_settings.debug_mode = _to_bool(payload.get("debug_mode"))
 
@@ -1866,6 +1880,7 @@ async def provider_modal(
     from sqlalchemy import select
 
     from app.db.models import NotificationChannel, Provider
+    from app.services import provider_service
     from app.services.indexers.catalog import INDEXER_PRESETS
 
     async with async_session_factory() as session:
@@ -1877,7 +1892,11 @@ async def provider_modal(
             (await session.execute(select(NotificationChannel))).scalars().all()
         )
         downloader_name = await _active_downloader_name(session)
+        delivery_provider = await provider_service.get_delivery_provider(session)
 
+    delivery_config = None
+    if provider is not None and provider.type == "local_directory":
+        delivery_config = _delivery_form_values(provider)
     new_type = type.strip().lower() if type.strip().lower() in _WATCHLIST_TYPES else ""
     return templates.TemplateResponse(
         request=request,
@@ -1891,6 +1910,8 @@ async def provider_modal(
             "indexer_presets": INDEXER_PRESETS,
             "experimental_types": experimental_types(),
             "indexer_cfg": provider.indexer_config if provider else {},
+            "delivery_provider": delivery_provider,
+            "delivery_config": delivery_config,
         },
     )
 
@@ -1936,11 +1957,14 @@ async def _sab_categories_from_form(request: Request) -> dict[str, str]:
     }
 
 
-def _seerr_form_error(message: str) -> HTMLResponse:
+def _form_error(message: str, status_code: int = 422) -> HTMLResponse:
     return HTMLResponse(
         content=f'<p class="text-sm text-red-400">{html.escape(message)}</p>',
-        status_code=422,
+        status_code=status_code,
     )
+
+
+_seerr_form_error = _form_error
 
 
 def _reload_response(flash: str = "") -> HTMLResponse:
@@ -1961,6 +1985,136 @@ async def _foreign_transfer_flash(session: Any, new_type: str) -> str:
     )
 
 
+_DELIVERY_PATH_FIELDS = ("movies_path", "shows_path", "anime_path", "anime_movies_path")
+_DELIVERY_TEMPLATE_FIELDS = (
+    "movie_template",
+    "show_template",
+    "anime_template",
+    "anime_movie_template",
+)
+
+
+def _delivery_form_values(provider: Any) -> dict[str, Any]:
+    """Stored delivery config shaped for the edit form (buffer in GB)."""
+    from dataclasses import asdict
+
+    from app.services.delivery.config import DeliveryConfig
+
+    values = asdict(DeliveryConfig.from_provider(provider))
+    gb = values["min_free_buffer_bytes"] / 1024**3
+    values["min_free_buffer_gb"] = int(gb) if gb == int(gb) else round(gb, 2)
+    return values
+
+
+def _delivery_config_from_form(form: Any) -> tuple[dict[str, Any], str]:
+    """Build the delivery ``config_json`` dict from a raw form; returns ``(cfg, error)``."""
+    from app.services.delivery.config import DeliveryConfig, validate_templates
+
+    def text(key: str) -> str:
+        value = form.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    cfg: dict[str, Any] = {}
+    for key in _DELIVERY_PATH_FIELDS:
+        value = text(key)
+        if value and not value.startswith("/"):
+            return {}, f"{key} must be an absolute path."
+        cfg[key] = value
+    for key in _DELIVERY_TEMPLATE_FIELDS:
+        value = text(key)
+        if value:
+            cfg[key] = value
+    raw_gb = text("min_free_buffer_gb")
+    if raw_gb:
+        try:
+            gb = float(raw_gb)
+        except ValueError:
+            gb = -1.0
+        if gb < 0:
+            return (
+                {},
+                "Free-space buffer must be a number of GB (0 disables the guard).",
+            )
+        cfg["min_free_buffer_bytes"] = int(gb * 1024**3)
+    cfg["delete_cloud_after_delivery"] = (
+        form.get("delete_cloud_after_delivery") is not None
+    )
+    cfg["sab_path_map_remote"] = text("sab_path_map_remote")
+    cfg["sab_path_map_local"] = text("sab_path_map_local")
+    unknown = validate_templates(DeliveryConfig(**cfg))
+    if unknown:
+        return {}, "Unknown template placeholder(s): " + ", ".join(unknown)
+    return cfg, ""
+
+
+async def _save_delivery_provider(
+    request: Request, provider_id: int | None, name: str, is_active: bool
+) -> HTMLResponse:
+    from app.db.models import Provider
+    from app.services import provider_service
+
+    cfg, error = _delivery_config_from_form(await request.form())
+    if error:
+        return _form_error(error)
+    async with async_session_factory() as session:
+        if provider_id:
+            provider = await session.get(Provider, provider_id)
+            if provider is None or provider.type != "local_directory":
+                raise HTTPException(status_code=404, detail="Provider not found")
+            provider.name = name
+            provider.is_active = is_active
+            provider.config_json = json.dumps(cfg)
+        else:
+            try:
+                await provider_service.create_delivery_provider(
+                    session, name=name, config_json=json.dumps(cfg)
+                )
+            except provider_service.DeliveryProviderExistsError as exc:
+                return _form_error(str(exc), status_code=409)
+        await session.commit()
+    return _reload_response()
+
+
+def _probe_directory(path: str) -> tuple[bool, str]:
+    """Check that ``path`` is an existing writable directory (create + delete a temp file)."""
+    import tempfile
+
+    if not path.startswith("/"):
+        return False, "Not an absolute path"
+    if not os.path.isdir(path):
+        return False, "Directory does not exist"
+    try:
+        fd, probe = tempfile.mkstemp(prefix=".smewlet-probe-", dir=path)
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as exc:
+        return False, f"Not writable: {exc.strerror or exc}"
+    return True, "Writable"
+
+
+async def _test_delivery_paths(request: Request) -> JSONResponse:
+    form = await request.form()
+    paths: list[dict[str, Any]] = []
+    for field in _DELIVERY_PATH_FIELDS:
+        value = form.get(field)
+        value = value.strip() if isinstance(value, str) else ""
+        if not value:
+            continue
+        ok, detail = await asyncio.to_thread(_probe_directory, value)
+        paths.append({"field": field, "path": value, "ok": ok, "detail": detail})
+    if not paths:
+        return JSONResponse(
+            {"ok": False, "message": "Configure at least one path.", "paths": []}
+        )
+    failed = sum(1 for p in paths if not p["ok"])
+    message = (
+        "All paths are writable."
+        if not failed
+        else f"{failed} of {len(paths)} path(s) failed."
+    )
+    return JSONResponse({"ok": not failed, "message": message, "paths": paths})
+
+
 @app.post("/api/providers/test")
 async def test_downloader_provider(
     request: Request,
@@ -1973,6 +2127,8 @@ async def test_downloader_provider(
     from app.services.downloaders.factory import get_downloader_client
 
     ptype = provider_type.strip().lower()
+    if ptype == "local_directory":
+        return await _test_delivery_paths(request)
     error = _validate_downloader_form(ptype, api_key, api_url)
     if error:
         return JSONResponse({"ok": False, "message": error}, status_code=422)
@@ -2038,6 +2194,11 @@ async def save_provider(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     resolved_category = category or type_category
+
+    if type_category == ProviderCategory.DELIVERY.value:
+        return await _save_delivery_provider(
+            request, provider_id, name, is_active and provider_id is not None
+        )
 
     indexer_categories: dict[str, str | None] = {}
     if is_indexer_type(provider_type):
