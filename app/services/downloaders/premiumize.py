@@ -12,10 +12,13 @@ from app.config import DEFAULT_USER_AGENT
 from app.core.rate_limiter import RateLimitExceeded, RollingWindowRateLimiter
 from app.services.downloaders.base import (
     BaseDownloader,
+    DownloaderAuthError,
+    DownloaderError,
     DownloaderFile,
     DownloaderNetworkError,
     DownloaderTransfer,
     DownloaderUploadResult,
+    DownloadLink,
     TransferState,
     outage_upload_result,
 )
@@ -265,6 +268,41 @@ class PremiumizeDownloader(BaseDownloader):
                     )
                 )
         return files
+
+    async def get_download_links(self, transfer_id: str) -> list[DownloadLink]:
+        folder_id = next(
+            (
+                t.get("folder_id")
+                for t in await self._list_raw()
+                if str(t.get("id")) == transfer_id
+            ),
+            None,
+        )
+        if not folder_id:
+            raise DownloaderError("Premiumize transfer has no cloud folder")
+        return await self._walk_links(str(folder_id), 1)
+
+    async def _walk_links(self, folder_id: str, depth: int) -> list[DownloadLink]:
+        status, body = await self._request(
+            "GET", "/folder/list", params={"id": folder_id}
+        )
+        verdict = classify_http_status(status)
+        if verdict is not None and verdict.kind == "auth":
+            raise DownloaderAuthError("Premiumize rejected credentials", verdict)
+        links: list[DownloadLink] = []
+        for entry in body.get("content") or []:
+            if entry.get("type") == "folder":
+                if depth < _FOLDER_MAX_DEPTH:
+                    links += await self._walk_links(str(entry["id"]), depth + 1)
+            elif entry.get("link"):
+                links.append(
+                    DownloadLink(
+                        name=str(entry.get("name") or ""),
+                        url=str(entry["link"]),
+                        size_bytes=int(entry.get("size") or 0),
+                    )
+                )
+        return links
 
     async def delete_transfer(
         self, transfer_id: str, delete_files: bool = True

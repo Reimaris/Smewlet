@@ -64,6 +64,15 @@ class DownloaderFile:
     path: str | None = None
 
 
+@dataclass(frozen=True)
+class DownloadLink:
+    """Fresh per-file HTTP link; never persisted or logged."""
+
+    name: str
+    url: str = field(repr=False)
+    size_bytes: int
+
+
 class DownloaderError(Exception):
     """Base class for downloader client failures."""
 
@@ -169,6 +178,10 @@ class BaseDownloader(ABC):
 
     @abstractmethod
     async def get_transfer_files(self, transfer_id: str) -> list[DownloaderFile]: ...
+
+    async def get_download_links(self, transfer_id: str) -> list[DownloadLink]:
+        """Fresh per-file HTTP links of a finished transfer (cloud downloaders only)."""
+        raise DownloaderError("Download links are not supported")
 
     @abstractmethod
     async def delete_transfer(

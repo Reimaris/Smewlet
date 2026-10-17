@@ -27,13 +27,14 @@ from app.services.downloaders.base import (
     DownloaderOutageError,
     DownloaderTransfer,
     DownloaderUploadResult,
+    DownloadLink,
     TransferState,
     outage_upload_result,
 )
 from app.services.downloaders.base import (
     DownloaderNetworkError as BaseDownloaderNetworkError,
 )
-from app.services.outage_classifier import classify_exception
+from app.services.outage_classifier import classify_exception, classify_http_status
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -103,6 +104,11 @@ class TorBoxError(DownloaderError):
 
 class DownloaderNetworkError(TorBoxError, BaseDownloaderNetworkError):
     pass
+
+
+def _client_factory() -> httpx.AsyncClient:
+    """Patch point for tests (inject ``httpx.MockTransport``)."""
+    return httpx.AsyncClient(timeout=15.0, headers={"User-Agent": DEFAULT_USER_AGENT})
 
 
 def _sanitize_error_body(text: str) -> str:
@@ -824,6 +830,55 @@ class TorBoxDownloader(BaseDownloader):
                 if isinstance(f, dict)
             ]
         return []
+
+    async def get_download_links(self, transfer_id: str) -> list[DownloadLink]:
+        items = await get_usenet_downloads(
+            bypass_cache=True, session=self.session, explicit_key=self._key
+        )
+        item = next((i for i in items if str(i.get("id")) == str(transfer_id)), None)
+        if item is None:
+            raise DownloaderError("TorBox transfer not found")
+        links: list[DownloadLink] = []
+        async with _client_factory() as client:
+            for f in item.get("files") or []:
+                if not isinstance(f, dict) or f.get("id") is None:
+                    continue
+                try:
+                    resp = await client.get(
+                        f"{TORBOX_BASE_URL}/api/usenet/requestdl",
+                        params={
+                            "token": self._key or "",
+                            "usenet_id": transfer_id,
+                            "file_id": f["id"],
+                            "redirect": "false",
+                        },
+                    )
+                    resp.raise_for_status()
+                    body = resp.json()
+                except httpx.HTTPStatusError as e:
+                    verdict = classify_http_status(e.response.status_code)
+                    if verdict is not None and verdict.kind == "auth":
+                        raise DownloaderAuthError(
+                            "TorBox rejected credentials", verdict
+                        ) from None
+                    raise DownloaderNetworkError(
+                        f"TorBox link request failed: HTTP {e.response.status_code}"
+                    ) from None
+                except (httpx.HTTPError, ValueError) as e:
+                    raise DownloaderNetworkError(
+                        f"TorBox unreachable: {type(e).__name__}"
+                    ) from None
+                url = body.get("data") if isinstance(body, dict) else None
+                if not (isinstance(body, dict) and body.get("success") and url):
+                    raise DownloaderError("TorBox returned no download link")
+                links.append(
+                    DownloadLink(
+                        name=str(f.get("name") or f.get("short_name") or ""),
+                        url=str(url),
+                        size_bytes=int(f.get("size") or 0),
+                    )
+                )
+        return links
 
     async def delete_transfer(
         self, transfer_id: str, delete_files: bool = True
