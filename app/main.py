@@ -16,7 +16,7 @@ import logging
 import os
 import re
 import uuid
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -4313,8 +4313,30 @@ async def run_system_check(request: Request):
                 "latency_ms": latency,
             }
 
+    async def probe_delivery(provider: Provider) -> list[dict[str, Any]]:
+        from app.services.delivery.config import DeliveryConfig
+
+        cfg = DeliveryConfig.from_provider(provider)
+        rows: list[dict[str, Any]] = []
+        for field in _DELIVERY_PATH_FIELDS:
+            path = getattr(cfg, field)
+            if not path:  # unconfigured paths are never reported failed
+                continue
+            start = time.perf_counter()
+            ok, detail = await asyncio.to_thread(_probe_directory, path)
+            rows.append(
+                {
+                    "name": f"Delivery: {field.removesuffix('_path').replace('_', ' ')}",
+                    "category": "Delivery",
+                    "ok": ok,
+                    "msg": f"{path} — {detail}",
+                    "latency_ms": int((time.perf_counter() - start) * 1000),
+                }
+            )
+        return rows
+
     # Build probe coroutine list
-    probes = [
+    probes: list[Coroutine[Any, Any, Any]] = [
         probe_database(),
         probe_storage(),
         probe_anilist(),
@@ -4357,6 +4379,10 @@ async def run_system_check(request: Request):
         if tg.type == "telegram" and tg.bot_token:
             probes.append(probe_telegram(tg))
 
+    delivery = next((p for p in active_providers if p.category == "delivery"), None)
+    if delivery is not None:
+        probes.append(probe_delivery(delivery))
+
     # Run all probes concurrently
     probe_outputs = await asyncio.gather(*probes, return_exceptions=True)
 
@@ -4364,6 +4390,8 @@ async def run_system_check(request: Request):
     for out in probe_outputs:
         if isinstance(out, dict):
             results.append(out)
+        elif isinstance(out, list):
+            results.extend(out)
         elif isinstance(out, Exception):
             results.append(
                 {

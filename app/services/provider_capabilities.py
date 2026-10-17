@@ -17,7 +17,13 @@ if TYPE_CHECKING:
 
     from app.db.models import MediaItem
 
-CATEGORY_ORDER: tuple[str, ...] = ("watchlist", "downloader", "metadata", "indexer")
+CATEGORY_ORDER: tuple[str, ...] = (
+    "watchlist",
+    "downloader",
+    "metadata",
+    "indexer",
+    "delivery",
+)
 
 AUTO_ADVANCE_UNAVAILABLE_MESSAGE: str = (
     "⚠ Unavailable: None of this title's connected watchlist sources (e.g. Plex) "
@@ -32,7 +38,7 @@ _TMDB_DATES = "No exact air dates (uses TMDB dates)"
 @dataclass(frozen=True, slots=True)
 class ProviderCapability:
     provider_type: str
-    category: str  # "watchlist" | "downloader" | "indexer" | "metadata"
+    category: str  # "watchlist" | "downloader" | "indexer" | "metadata" | "delivery"
     display_name: str
     media_coverage: tuple[str, ...]  # subset of ("movies", "series", "anime")
     supports_watch_progress: bool = False
@@ -154,6 +160,13 @@ def _build() -> dict[str, ProviderCapability]:
             summary="Local downloader with unpack verification and category mapping.",
         ),
         _indexer("newznab", "Newznab"),
+        ProviderCapability(
+            "local_directory",
+            "delivery",
+            "Local directory",
+            _ALL_MEDIA,
+            summary="Delivers finished downloads into library folders.",
+        ),
     ]
     entries.extend(_indexer(p.type, p.name) for p in INDEXER_PRESETS)
     return {e.provider_type: e for e in entries}

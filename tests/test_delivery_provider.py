@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -329,3 +330,47 @@ async def test_edit_modal_prefills_delivery_config(
     html = (await async_client.get(f"/settings/provider/{provider.id}/edit")).text
     assert 'value="/data/films"' in html
     assert 'name="min_free_buffer_gb" value="2"' in html
+
+
+# --- System check probe & capabilities (m78-13) -------------------------------
+
+
+async def _check(client) -> str:  # type: ignore[no-untyped-def]
+    return (await client.get("/system/check/run")).text
+
+
+async def test_system_check_probes_configured_delivery_paths(
+    async_client, db_session: AsyncSession, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    ok_dir = tmp_path / "movies"
+    ok_dir.mkdir()
+    ro_dir = tmp_path / "shows"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o500)
+    await make_delivery_provider(
+        db_session,
+        movies_path=str(ok_dir),
+        shows_path=str(ro_dir),
+        anime_path=str(tmp_path / "missing"),
+    )
+    await db_session.commit()
+    try:
+        html = await _check(async_client)
+    finally:
+        ro_dir.chmod(0o700)
+    assert "Delivery: movies" in html and "Writable" in html
+    assert "Delivery: anime" in html and "does not exist" in html
+    assert "Delivery: anime movies" not in html  # unconfigured -> no row
+    assert list(ok_dir.iterdir()) == []
+    if os.geteuid() != 0:
+        assert "Not writable" in html
+
+
+async def test_system_check_skips_inactive_or_absent_delivery(
+    async_client, db_session: AsyncSession, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    assert "Delivery:" not in await _check(async_client)
+    provider = await make_delivery_provider(db_session, movies_path=str(tmp_path))
+    provider.is_active = False
+    await db_session.commit()
+    assert "Delivery:" not in await _check(async_client)

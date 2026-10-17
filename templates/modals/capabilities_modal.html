@@ -2,7 +2,7 @@
 {% macro mark(value) -%}
 {% if value %}<span class="text-green-400 font-bold" aria-label="Yes">✓</span>{% else %}<span class="text-zinc-500" aria-label="No">✗</span>{% endif %}
 {%- endmacro %}
-{% set tabs = [('watchlist', 'Watchlists'), ('downloader', 'Downloaders'), ('metadata', 'Metadata'), ('indexer', 'Indexers')] %}
+{% set tabs = [('watchlist', 'Watchlists'), ('downloader', 'Downloaders'), ('metadata', 'Metadata'), ('indexer', 'Indexers'), ('delivery', 'Delivery')] %}
 <div class="nzb-modal-backdrop fixed inset-0 bg-black/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fade-in"
      x-data='{ tab: {{ (focus_category or "watchlist") | tojson }} }'
      x-init="$nextTick(() => { const el = $el.querySelector('[data-focused=true]'); if (el) el.scrollIntoView({ block: 'center' }); })">

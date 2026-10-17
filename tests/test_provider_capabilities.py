@@ -30,7 +30,7 @@ from tests.conftest import make_movie, make_series, make_source, make_watchlist_
 ALL_SLUGS = (
     set(WATCHLIST_TYPES)
     | set(DOWNLOADER_TYPES)
-    | {"tmdb", "newznab"}
+    | {"tmdb", "newznab", "local_directory"}
     | {p.type for p in INDEXER_PRESETS}
 )
 
@@ -115,6 +115,7 @@ PINNED = {
     ),
     "sabnzbd": ("downloader", _ALL, False, False, "local", True, True, True, False),
     "newznab": ("indexer", _ALL, False, False, "", False, False, False, True),
+    "local_directory": ("delivery", _ALL, False, False, "", False, False, False, False),
 }
 LIMITATIONS = {
     "plex": (
@@ -276,7 +277,7 @@ async def test_push_modal_no_warning_for_simkl_item(db_session, async_client):
 async def test_capabilities_modal_renders_tabs(async_client):
     resp = await async_client.get("/settings/capabilities")
     assert resp.status_code == 200
-    for label in ("Watchlists", "Downloaders", "Metadata", "Indexers"):
+    for label in ("Watchlists", "Downloaders", "Metadata", "Indexers", "Delivery"):
         assert label in resp.text
     assert 'data-focused="true"' not in resp.text
 
