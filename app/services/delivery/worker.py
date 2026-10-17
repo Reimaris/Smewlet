@@ -382,21 +382,25 @@ async def retry_delivery(session: AsyncSession, history_id: int) -> bool:
     return True
 
 
-async def deliver_now(session: AsyncSession, history_id: int) -> bool:
-    """Manual 'Deliver to Library' for a finished cloud row."""
-    history = await session.get(DownloadHistory, history_id)
-    if (
-        history is None
-        or history.completed_at is None
-        or history.downloader_type == "sabnzbd"
-        or (history.status_detail or "") in NOT_DELIVERABLE_DETAILS
-        or history.delivery_status
-        not in (
+def is_deliver_now_allowed(history: DownloadHistory) -> bool:
+    """Card 4 'Deliver to Library': finished cloud row, still on the downloader."""
+    return (
+        history.completed_at is not None
+        and history.downloader_type != "sabnzbd"
+        and (history.status_detail or "") not in NOT_DELIVERABLE_DETAILS
+        and history.delivery_status
+        in (
             DeliveryStatus.NONE.value,
             DeliveryStatus.FAILED.value,
             DeliveryStatus.PAUSED.value,
         )
-    ):
+    )
+
+
+async def deliver_now(session: AsyncSession, history_id: int) -> bool:
+    """Manual 'Deliver to Library' for a finished cloud row."""
+    history = await session.get(DownloadHistory, history_id)
+    if history is None or not is_deliver_now_allowed(history):
         return False
     history.deliver_enabled = True
     history.delivery_status = DeliveryStatus.PENDING.value

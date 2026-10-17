@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/_delivery_ui.html" import delivery_badge, delivery_buttons %}
 
 {% block content %}
 <div id="outage-banner" hx-get="/api/outages/banner" hx-trigger="every 30s" hx-swap="innerHTML">{% include "partials/outage_banner.html" %}</div>
@@ -1430,6 +1431,7 @@ document.addEventListener('alpine:init', () => {
                             {% else %}
                             <span class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">{{ h.downloader_status }}</span>
                             {% endif %}
+                            {% if not h.is_dry_run %}{{ delivery_badge(h) }}{% endif %}
                         </td>
                         <!-- Col 5: Actions (Compact Icon-Only Re-Push + Two-Stage Smart Trash, Anchored Bottom Action Bar on Mobile) -->
                         <td class="block md:table-cell border-t border-[#3f3f46]/40 mt-3 pt-2.5 md:mt-0 md:pt-0 md:border-t-0 md:px-4 md:py-3.5 text-right md:w-px md:whitespace-nowrap w-full">
@@ -1451,8 +1453,10 @@ document.addEventListener('alpine:init', () => {
                                 {% else %}
                                 <span class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">{{ h.downloader_status }}</span>
                                 {% endif %}
+                                {% if not h.is_dry_run %}{{ delivery_badge(h) }}{% endif %}
                             </div>
                             <div class="flex justify-end items-center gap-1.5 ml-auto">
+                                {{ delivery_buttons(h.id, h) }}
                                 {% if h.can_repush %}
                                 <button type="button"
                                         hx-get="/api/items/{{ h.media_item_id }}/push-modal"

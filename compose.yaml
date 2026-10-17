@@ -8,5 +8,13 @@ services:
       - TZ=Europe/Berlin
     volumes:
       - ./config:/app/config
+      # Optional: library folders for the Local directory delivery provider.
+      # Use the same container-side paths in Settings. The container runs as
+      # UID 1000, which needs write access. For SABnzbd hardlinks, mount the
+      # same filesystem that holds SABnzbd's download folder.
+      # - /srv/media/movies:/media/movies
+      # - /srv/media/tv:/media/tv
+      # - /srv/media/anime:/media/anime
+      # - /srv/media/anime-movies:/media/anime-movies
     restart: unless-stopped
 

@@ -1,0 +1,28 @@
+{# Delivery badge and buttons shared by Card 4 (history ledger) and Card 5 (active pushes). #}
+{% macro delivery_badge(p) -%}
+{% set st = p.delivery_status %}
+{% if st == 'delivered' %}
+<span data-delivery-badge="delivered" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-green-500/15 text-green-400 border border-green-500/30" title="{{ p.delivered_paths | join('\n') if p.delivered_paths else 'Delivered' }}">DELIVERED</span>
+{% elif st == 'delivering' %}
+<span data-delivery-badge="delivering" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 animate-pulse">DELIVERING</span>
+{% elif st == 'pending' %}
+<span data-delivery-badge="pending" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-zinc-500/15 text-zinc-300 border border-zinc-500/30">DELIVERY QUEUED</span>
+{% elif st == 'failed' %}
+<span data-delivery-badge="failed" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-red-500/15 text-red-400 border border-red-500/30" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>DELIVERY FAILED</span>
+{% elif st == 'paused' %}
+<span data-delivery-badge="paused" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-500/15 text-amber-400 border border-amber-500/30" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>DELIVERY PAUSED</span>
+{% endif %}
+{%- endmacro %}
+
+{# swap="none": the 200 response carries HX-Trigger refreshDashboard; a 409 message is shown in place. #}
+{% macro delivery_buttons(history_id, p) -%}
+{% if p.can_retry_delivery %}
+<button type="button" hx-post="/api/history/{{ history_id }}/retry-delivery" hx-swap="none"
+        title="Retry delivery to the library"
+        class="bg-[#2a2a32] hover:bg-emerald-700 text-emerald-300 hover:text-white border border-emerald-700/60 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors">Retry Delivery</button>
+{% elif p.can_deliver_now %}
+<button type="button" hx-post="/api/history/{{ history_id }}/deliver" hx-swap="none"
+        title="Copy the finished download into the library"
+        class="bg-[#2a2a32] hover:bg-emerald-700 text-emerald-300 hover:text-white border border-emerald-700/60 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors">Deliver to Library</button>
+{% endif %}
+{%- endmacro %}

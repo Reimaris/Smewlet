@@ -1,3 +1,4 @@
+{% from "partials/_delivery_ui.html" import delivery_buttons %}
 {% set active_in_flight = in_flight_titles if in_flight_titles is defined else [] %}
 {% if active_in_flight %}
 <div class="mb-3 px-4 py-2.5 rounded-lg bg-cyan-950/60 border border-cyan-600/50 text-cyan-200 text-xs font-medium flex items-center gap-2.5 animate-pulse" data-in-flight-banner="true">
@@ -86,6 +87,8 @@
                                         <span class="bg-red-900/90 text-red-200 border border-red-700 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-sm">{{ p.status }}</span>
                                     {% elif p.is_rate_limited %}
                                         <span class="bg-amber-900/80 text-amber-200 border border-amber-600 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-sm" title="{{ p.status_detail if p.status_detail else 'Provider rate limit active — resumes automatically' }}">{{ p.status }}</span>
+                                    {% elif p.is_delivery %}
+                                        <span data-delivery-status="{{ p.delivery_status }}" class="{% if p.delivery_status == 'failed' %}bg-red-900/90 text-red-200 border border-red-700{% elif p.delivery_status == 'paused' %}bg-amber-900/80 text-amber-200 border border-amber-600{% else %}bg-cyan-600 text-white animate-pulse{% endif %} text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-sm" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>{{ p.status }}</span>
                                     {% elif p.is_completed %}
                                         <span class="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-sm">{{ p.status }}</span>
                                     {% elif p.status == 'Unpacking' or p.status == 'Verifying' %}
@@ -148,6 +151,8 @@
                         {% endif %}
                     {% elif p.is_rate_limited %}
                         <span class="bg-amber-900/80 text-amber-200 border border-amber-600 text-[11px] font-bold px-2.5 py-1 rounded uppercase tracking-wider shadow-sm" title="{{ p.status_detail if p.status_detail else 'Provider rate limit active — resumes automatically' }}">{{ p.status }}</span>
+                    {% elif p.is_delivery %}
+                        <span data-delivery-status="{{ p.delivery_status }}" class="{% if p.delivery_status == 'failed' %}bg-red-900/90 text-red-200 border border-red-700{% elif p.delivery_status == 'paused' %}bg-amber-900/80 text-amber-200 border border-amber-600{% else %}bg-cyan-600 text-white animate-pulse{% endif %} text-[11px] font-bold px-2.5 py-1 rounded uppercase tracking-wider shadow-sm" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>{{ p.status }}</span>
                     {% elif p.is_completed %}
                         <span class="bg-emerald-600 text-white text-[11px] font-bold px-2.5 py-1 rounded uppercase tracking-wider shadow-sm">{{ p.status }}</span>
                     {% elif p.status == 'Unpacking' or p.status == 'Verifying' %}
@@ -184,6 +189,16 @@
                             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                             Dismiss
                         </button>
+                        {% elif p.is_delivery %}
+                        {{ delivery_buttons(p.history_id, p) }}
+                        {% if p.can_retry_delivery %}
+                        <button hx-post="/api/pushes/{{ p.history_id }}/dismiss"
+                                hx-target="#active-pushes-container"
+                                hx-swap="innerHTML"
+                                class="bg-[#2a2a32] hover:bg-[#3f3f46] text-gray-300 hover:text-white border border-[#3f3f46] text-xs font-semibold px-3 py-1.5 rounded-md transition-colors">
+                            Dismiss
+                        </button>
+                        {% endif %}
                         {% elif p.is_rate_limited %}
                         <button hx-post="/api/pushes/{{ p.history_id }}/dismiss"
                                 hx-target="#active-pushes-container"

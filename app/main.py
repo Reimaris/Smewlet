@@ -5848,6 +5848,37 @@ async def api_history_delete_transfer(history_id: int, request: Request) -> Resp
     return JSONResponse(status_code=200, content=res)
 
 
+async def _delivery_action(history_id: int, action: str, denied: str) -> Response:
+    from app.services.delivery import worker
+
+    async with async_session_factory() as session:
+        ok = await getattr(worker, action)(session, history_id)
+    if not ok:
+        return HTMLResponse(
+            content=f'<span class="text-xs text-red-400">{html.escape(denied)}</span>',
+            status_code=409,
+        )
+    return HTMLResponse(content="", headers={"HX-Trigger": "refreshDashboard"})
+
+
+@app.post("/api/history/{history_id}/retry-delivery")
+async def api_history_retry_delivery(history_id: int) -> Response:
+    """Re-queue a failed or paused delivery."""
+    return await _delivery_action(
+        history_id, "retry_delivery", "Only failed or paused deliveries can be retried."
+    )
+
+
+@app.post("/api/history/{history_id}/deliver")
+async def api_history_deliver_now(history_id: int) -> Response:
+    """Start delivery for a finished cloud transfer that was not delivered."""
+    return await _delivery_action(
+        history_id,
+        "deliver_now",
+        "This transfer cannot be delivered (not finished, no longer on the downloader, or already delivering).",
+    )
+
+
 @app.post("/api/history/{history_id}/blacklist")
 async def api_history_blacklist(history_id: int, request: Request) -> Response:
     """Blacklist release from Push History Ledger row, delete from the downloader if present, mark row 'deleted', and reset target to SEARCHING."""

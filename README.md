@@ -185,6 +185,20 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ---
 
+## Delivery
+
+Smewlet can optionally move finished downloads into your media library. It is off until you add the **Local directory** provider under *Settings → Providers → Add Provider* (it is created inactive; switch it on once the paths are set). Smewlet still never downloads Usenet content itself: delivery is a separate step after your downloader finishes.
+
+- **Four paths:** movies, shows, anime and anime movies. Leave a path empty to skip that media type; a push for an unconfigured type is paused with `PATH_NOT_CONFIGURED`. Use *Test* in the provider dialog to check each path exists and is writable.
+- **Templates:** each media kind has a naming template (placeholders: `title`, `year`, `entry_title`, `season`, `episode`, `episode_title`, `resolution`, `source`, `ext`). Unknown placeholders are rejected on save. Existing files are never overwritten.
+- **Anime** are filed per entry (one folder per AniList entry), so sequels and OVAs get their own folders.
+- **Cloud downloaders** (TorBox, Premiumize): files are streamed from the provider into the library, optionally deleting the cloud copy afterwards.
+- **SABnzbd:** files are hardlinked (falling back to move). Hardlinks need the SABnzbd download folder and the library on the **same filesystem**. If SABnzbd reports paths that differ from what Smewlet sees, set the *SABnzbd path map* (remote prefix → local prefix).
+- **Per push:** the push modal and manual search drawer have a *Deliver to Library* toggle (pre-checked when the provider is active). Finished rows offer *Deliver to Library* and, after a failure or pause, *Retry Delivery*.
+- **Free space:** a configurable buffer pauses delivery before the library volume fills up.
+
+Mount your library folders into the container (see the commented example in `compose.yaml`). The container runs as UID 1000, so that user needs write access to the mounted folders.
+
 ## Tech Stack
 
 - **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0 (Async), APScheduler

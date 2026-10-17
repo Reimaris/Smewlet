@@ -27,6 +27,7 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
@@ -48,6 +49,8 @@ from app.core.time_utils import to_local_datetime
 from app.db.database import async_session_factory
 from app.db.models import (
     BlacklistedRelease,
+    DeliveredFile,
+    DeliveryStatus,
     DownloadHistory,
     Episode,
     EpisodeStatus,
@@ -1933,6 +1936,61 @@ async def _handle_transfer_failure(
     await session.commit()
 
 
+_DELIVERY_ACTIVE = (DeliveryStatus.PENDING.value, DeliveryStatus.DELIVERING.value)
+_DELIVERY_ATTENTION = (DeliveryStatus.FAILED.value, DeliveryStatus.PAUSED.value)
+_DELIVERY_BADGES = {
+    DeliveryStatus.PENDING.value: "Delivery queued",
+    DeliveryStatus.DELIVERING.value: "DELIVERING",
+    DeliveryStatus.FAILED.value: "Delivery failed",
+    DeliveryStatus.PAUSED.value: "Delivery paused",
+}
+
+
+async def _delivery_context(
+    session: AsyncSession, history_ids: Sequence[int]
+) -> tuple[dict[int, list[str]], bool]:
+    """Delivered destination paths per history row, plus whether delivery is active."""
+    from app.services.provider_service import get_active_delivery_provider
+
+    paths: dict[int, list[str]] = {}
+    if history_ids:
+        stmt = (
+            select(DeliveredFile.history_id, DeliveredFile.dest_path)
+            .where(
+                DeliveredFile.history_id.in_(history_ids),
+                DeliveredFile.status == "delivered",
+                DeliveredFile.dest_path.is_not(None),
+            )
+            .order_by(DeliveredFile.id)
+        )
+        for hid, dest in (await session.execute(stmt)).all():
+            paths.setdefault(hid, []).append(dest)
+    provider_active = await get_active_delivery_provider(session) is not None
+    return paths, provider_active
+
+
+def _delivery_fields(
+    h: DownloadHistory, paths: dict[int, list[str]], provider_active: bool
+) -> dict[str, Any]:
+    """Delivery keys shared by Card 4 and Card 5 rows (template/data contract)."""
+    from app.services.delivery.worker import is_deliver_now_allowed
+
+    status = h.delivery_status or DeliveryStatus.NONE.value
+    can_retry = status in _DELIVERY_ATTENTION
+    delivered_local = to_local_datetime(h.delivered_at)
+    return {
+        "deliver_enabled": bool(h.deliver_enabled),
+        "delivery_status": status,
+        "delivery_error": h.delivery_error,
+        "delivered_at": (
+            delivered_local.strftime("%Y-%m-%d %H:%M") if delivered_local else None
+        ),
+        "delivered_paths": paths.get(h.id, []),
+        "can_retry_delivery": can_retry,
+        "can_deliver_now": provider_active and is_deliver_now_allowed(h),
+    }
+
+
 def _format_speed_and_eta(speed_bytes: int, eta_seconds: int | None) -> str:
     if speed_bytes <= 0 and not eta_seconds:
         return "—"
@@ -1984,6 +2042,9 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
         rate_limit_source_label,
     )
 
+    delivery_paths, delivery_provider_active = await _delivery_context(
+        session, [h.id for h in rows]
+    )
     rate_limit_source: str = rate_limit_source_label(active_rate_limit_sources())
     active_rows: list[dict[str, Any]] = []
     seen_targets: set[tuple[int, int | None, int | None]] = set()
@@ -2047,11 +2108,20 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             and entity_status in ("completed", "downloaded")
         )
 
+        # Delivery rows stay visible past the retention window until settled/dismissed.
+        is_delivery = (
+            detail_lower == "completed"
+            and (h.delivery_status or "") in _DELIVERY_ACTIVE + _DELIVERY_ATTENTION
+        )
+        if is_delivery:
+            is_recently_completed = False
+
         if not (
             is_active_downloading
             or is_failed
             or is_rate_limited
             or is_recently_completed
+            or is_delivery
         ):
             continue
 
@@ -2074,7 +2144,9 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             )
         )
 
-        if is_recently_completed:
+        if is_delivery:
+            status_badge = _DELIVERY_BADGES[h.delivery_status]
+        elif is_recently_completed:
             status_badge = f"Ready on {DOWNLOADER_DISPLAY_NAMES.get(h.downloader_type, 'downloader')}"
         elif is_rate_limited:
             from app.core.rate_limit_queue import resume_time_label
@@ -2126,6 +2198,17 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             if is_recently_completed
             else _format_speed_and_eta(int(h.download_speed_bytes or 0), h.eta_seconds)
         )
+        if is_delivery:
+            delivering = h.delivery_status == DeliveryStatus.DELIVERING.value
+            row_progress_pct = (
+                round(float(h.progress_pct or 0.0), 1) if delivering else 0.0
+            )
+            if h.delivery_status in _DELIVERY_ATTENTION:
+                row_speed_and_eta = h.delivery_error or "—"
+            elif not delivering:
+                row_speed_and_eta = "Waiting for delivery slot"
+            elif h.downloader_type == "sabnzbd":
+                row_speed_and_eta = "Filing..."
 
         active_rows.append(
             {
@@ -2161,11 +2244,13 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
                 "outage_label": outage_match.group(2) if outage_match else None,
                 "outage_attempts": int(h.outage_attempts or 0),
                 "is_completed": is_recently_completed,
+                "is_delivery": is_delivery,
                 "completed_at": (
                     completed_at_utc.isoformat()
                     if is_recently_completed and completed_at_utc is not None
                     else None
                 ),
+                **_delivery_fields(h, delivery_paths, delivery_provider_active),
             }
         )
 
@@ -2302,6 +2387,8 @@ async def dismiss_all_active_pushes(session: AsyncSession) -> int:
         if not (is_completed or is_failed):
             # Active downloading or rate-limited transfers must not be dismissed!
             continue
+        if (h.delivery_status or "") in _DELIVERY_ACTIVE:
+            continue  # delivery must settle first
 
         h.is_dismissed = True
         dismissed_count += 1
@@ -3435,6 +3522,9 @@ async def get_push_history_ledger(session: AsyncSession) -> list[dict[str, Any]]
     )
     rows = (await session.execute(stmt)).scalars().all()
     language = await _anime_title_language(session)
+    delivery_paths, delivery_provider_active = await _delivery_context(
+        session, [h.id for h in rows]
+    )
     ledger: list[dict[str, Any]] = []
 
     for h in rows:
@@ -3621,6 +3711,7 @@ async def get_push_history_ledger(session: AsyncSession) -> list[dict[str, Any]]
                 "can_delete_transfer": status_key == "completed"
                 and bool(h.downloader_transfer_id),
                 "can_repush": h.media_item_id is not None,
+                **_delivery_fields(h, delivery_paths, delivery_provider_active),
             }
         )
 
