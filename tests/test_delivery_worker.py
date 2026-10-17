@@ -362,3 +362,120 @@ async def test_dry_run_plan_is_logged_without_writing(
     await db_session.refresh(h)
     assert h.delivery_status == "none"
     assert (await db_session.execute(select(DeliveredFile))).first() is None
+
+
+# ---------------------------------------------------------------------------
+# Ad-hoc completion detection (m78-11b)
+# ---------------------------------------------------------------------------
+
+
+def _adhoc_snapshot(state: str = "completed", size: int = 4 * 1024**3) -> list[dict]:
+    return [
+        {
+            "id": 99101,
+            "name": "Example.Film.2020.1080p.WEB-DL-GRP",
+            "download_state": state,
+            "download_finished": state == "completed",
+            "progress": 1.0 if state == "completed" else 0.4,
+            "download_speed": 1000,
+            "eta": 30,
+            "files": [{"name": "Example.Film.2020.1080p.WEB-DL-GRP.mkv", "size": size}],
+        }
+    ]
+
+
+async def _adhoc_tick(
+    session: AsyncSession,
+    snapshot: list[dict],
+    *,
+    deliver_enabled: bool = True,
+    provider_active: bool = True,
+) -> DownloadHistory:
+    from app.core.transfer_poller import run_transfer_poller_tick
+
+    provider = await make_delivery_provider(session, movies_path="/lib/movies")
+    provider.is_active = provider_active
+    history = await make_history(
+        session,
+        is_ad_hoc=True,
+        media_type_label="movie",
+        media_title="Example Film",
+        nzb_guid="guid-adhoc",
+        downloader_transfer_id="99101",
+        status_detail="downloading",
+        is_dismissed=False,
+        deliver_enabled=deliver_enabled,
+    )
+    await session.commit()
+    await run_transfer_poller_tick(session, pre_fetched_downloads=snapshot)
+    await session.refresh(history)
+    return history
+
+
+@pytest.mark.parametrize(
+    ("deliver_enabled", "provider_active", "queued"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+async def test_adhoc_completion_enqueues_only_when_enabled_and_active(
+    deliver_enabled, provider_active, queued, db_session
+) -> None:
+    history = await _adhoc_tick(
+        db_session,
+        _adhoc_snapshot(),
+        deliver_enabled=deliver_enabled,
+        provider_active=provider_active,
+    )
+
+    assert history.status_detail == "completed"
+    assert history.completed_at is not None
+    assert history.progress_pct == 100.0
+    assert history.delivery_status == ("pending" if queued else "none")
+    assert worker._get_queue().qsize() == (1 if queued else 0)
+
+
+async def test_adhoc_progress_updates_while_downloading(db_session) -> None:
+    history = await _adhoc_tick(db_session, _adhoc_snapshot("downloading"))
+
+    assert history.status_detail == "downloading"
+    assert history.progress_pct == pytest.approx(40.0)
+    assert history.delivery_status == "none"
+    assert worker._get_queue().qsize() == 0
+
+
+async def test_adhoc_fake_payload_fails_without_delivery(db_session) -> None:
+    history = await _adhoc_tick(db_session, _adhoc_snapshot(size=500 * 1024))
+
+    assert history.status_detail.startswith("failed: Layer 3 Fake Detection")
+    assert history.failed_at is not None
+    assert history.delivery_status == "none"
+    assert worker._get_queue().qsize() == 0
+
+
+async def test_adhoc_terminal_failure_state(db_session) -> None:
+    history = await _adhoc_tick(db_session, _adhoc_snapshot("failed"))
+
+    assert history.status_detail.startswith("failed:")
+    assert worker._get_queue().qsize() == 0
+
+
+async def test_active_adhoc_rows_keep_poller_awake(db_session) -> None:
+    from app.core.transfer_poller import count_downloading_entities
+
+    await make_history(
+        db_session,
+        is_ad_hoc=True,
+        nzb_guid="g-a",
+        downloader_transfer_id="1",
+        status_detail="downloading",
+    )
+    await make_history(
+        db_session,
+        is_ad_hoc=True,
+        is_dry_run=True,
+        nzb_guid="g-b",
+        downloader_transfer_id="2",
+        status_detail="downloading",
+    )
+    await db_session.commit()
+
+    assert await count_downloading_entities(db_session) == 1

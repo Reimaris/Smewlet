@@ -38,7 +38,7 @@ from app.core.anime_titles import anime_title_for
 from app.core.failure_logger import log_failure
 from app.core.fake_detector import is_transfer_filelist_fake
 from app.core.outage import is_queued_detail
-from app.core.parser import build_release_feature_pills
+from app.core.parser import build_release_feature_pills, parse_release_name
 from app.core.prerequisites import setup_blocks
 from app.core.rate_limit_queue import (
     downloader_rate_limit_detail,
@@ -330,7 +330,20 @@ async def count_downloading_entities(session: AsyncSession) -> int:
         )
     ).scalar() or 0
 
-    return int(movies_c + seasons_c + episodes_c)
+    adhoc_c = (
+        await session.execute(
+            select(func.count(DownloadHistory.id)).where(
+                DownloadHistory.is_ad_hoc.is_(True),
+                DownloadHistory.is_dry_run.is_(False),
+                DownloadHistory.downloader_transfer_id.is_not(None),
+                func.lower(func.coalesce(DownloadHistory.status_detail, "")).in_(
+                    ACTIVE_POLLABLE_STATUS_DETAILS
+                ),
+            )
+        )
+    ).scalar() or 0
+
+    return int(movies_c + seasons_c + episodes_c + adhoc_c)
 
 
 def _normalize_progress_pct(raw_progress: Any, status_lower: str) -> float:
@@ -1559,6 +1572,17 @@ async def _run_transfer_poller_tick_with_session(
         # 3. Still actively downloading / processing
         history.status_detail = status_lower or "downloading"
 
+    await _poll_adhoc_transfers(
+        session,
+        transfer_maps=transfer_maps,
+        clients=clients,
+        removed_types=removed_types,
+        skipped_types=skipped_types,
+        now_utc=now_utc,
+        download_timeout_minutes=download_timeout_minutes,
+        delivery_candidates=delivery_candidates,
+    )
+
     for aff_item in affected_items.values():
         await _recalculate_parent_status(session, aff_item)
 
@@ -1584,6 +1608,182 @@ async def _run_transfer_poller_tick_with_session(
         "remaining_active": remaining_active,
         "sleeping": not transfer_poller.is_awake,
     }
+
+
+def _fail_adhoc(history: DownloadHistory, reason: str, now_utc: datetime) -> None:
+    history.status_detail = f"failed: {reason}"[:200]
+    history.failed_at = now_utc
+    history.download_speed_bytes = 0
+    history.eta_seconds = None
+    history.notification_sent = True
+
+
+async def _poll_adhoc_transfers(
+    session: AsyncSession,
+    *,
+    transfer_maps: dict[str, dict[str, dict[str, Any]]],
+    clients: dict[str, BaseDownloader],
+    removed_types: set[str],
+    skipped_types: set[str],
+    now_utc: datetime,
+    download_timeout_minutes: int,
+    delivery_candidates: list[DownloadHistory],
+) -> None:
+    """Advance detached ad-hoc pushes (no MediaItem): progress, Layer 3 verify, completion.
+
+    Library entities are never touched; no blacklist or auto-replace applies.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(DownloadHistory).where(
+                    DownloadHistory.is_ad_hoc.is_(True),
+                    DownloadHistory.is_dry_run.is_(False),
+                    DownloadHistory.downloader_transfer_id.is_not(None),
+                    func.lower(func.coalesce(DownloadHistory.status_detail, "")).in_(
+                        ACTIVE_POLLABLE_STATUS_DETAILS
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for history in rows:
+        dtype = history.downloader_type or "torbox"
+        if dtype in removed_types:
+            _fail_adhoc(history, "Downloader provider removed", now_utc)
+            continue
+        if dtype in skipped_types:
+            continue
+        client = clients.get(dtype)
+        display_name = (
+            client.display_name
+            if client
+            else DOWNLOADER_DISPLAY_NAMES.get(dtype, "downloader")
+        )
+        raw_status, tb_item = _match_downloader_transfer(
+            history, transfer_maps.get(dtype, {})
+        )
+        status_lower = raw_status.lower()
+        if tb_item is not None:
+            history.progress_pct = _normalize_progress_pct(
+                tb_item.get("progress"), status_lower
+            )
+            history.download_speed_bytes = int(
+                tb_item.get("download_speed") or tb_item.get("speed") or 0
+            )
+            try:
+                raw_eta = tb_item.get("eta")
+                history.eta_seconds = (
+                    max(0, int(raw_eta)) if raw_eta is not None else None
+                )
+            except (TypeError, ValueError):
+                history.eta_seconds = None
+
+        is_completed = (
+            status_lower in ("completed", "cached", "paused")
+            or bool(tb_item and tb_item.get("download_finished") is True)
+        ) and status_lower not in ("downloading", "processing", "queued", "unknown")
+        if is_completed and tb_item is not None:
+            skip_layer3 = False
+            files: list[Any] = []
+            if client is None:
+                raw_files = tb_item.get("files")
+                files = (
+                    raw_files
+                    if isinstance(raw_files, list)
+                    else [{"name": tb_item.get("name") or tb_item.get("title") or ""}]
+                )
+            elif client.supports_file_listing:
+                try:
+                    files = list(
+                        await client.get_transfer_files(
+                            str(history.downloader_transfer_id)
+                        )
+                    )
+                except DownloaderNetworkError:
+                    continue
+            else:
+                skip_layer3 = True
+            is_movie = (history.media_type_label or "") in ("movie", "anime-movie")
+            is_sp = (
+                not is_movie and parse_release_name(history.nzb_title).episode is None
+            )
+            is_fake, fake_reason, is_archive = False, None, False
+            if not skip_layer3 and not files and client is not None:
+                if client.provider_type != "sabnzbd":
+                    is_fake, fake_reason, is_archive = (
+                        True,
+                        f"{display_name} returned empty file list",
+                        True,
+                    )
+            elif not skip_layer3:
+                is_fake, fake_reason, is_archive = is_transfer_filelist_fake(
+                    files,
+                    media_type="movie" if is_movie else "episode",
+                    is_season_pack=is_sp,
+                    release_name=history.nzb_title,
+                )
+            if is_archive:
+                history.unpack_started_at = history.unpack_started_at or now_utc
+                started = history.unpack_started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                if (now_utc - started).total_seconds() < UNPACK_GRACE_PERIOD_SECONDS:
+                    history.status_detail = "unpacking"
+                    history.progress_pct = 100.0
+                    history.download_speed_bytes = 0
+                    history.eta_seconds = None
+                else:
+                    _fail_adhoc(
+                        history,
+                        f"Layer 3 Fake Detection: {display_name} failed to extract archive within 10m",
+                        now_utc,
+                    )
+                continue
+            if is_fake:
+                _fail_adhoc(history, f"Layer 3 Fake Detection: {fake_reason}", now_utc)
+                continue
+            history.progress_pct = 100.0
+            history.download_speed_bytes = 0
+            history.eta_seconds = 0
+            history.status_detail = "completed"
+            history.completed_at = now_utc
+            history.unpack_started_at = None
+            if history.deliver_enabled:
+                delivery_candidates.append(history)
+            continue
+
+        if status_lower == "expired" or "expired" in status_lower:
+            history.progress_pct = 100.0
+            history.status_detail = "deleted"
+            history.notification_sent = True
+            continue
+
+        sent_at = history.dispatched_at
+        if sent_at is not None and sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        stalled = (
+            status_lower in ("downloading", "processing", "queued", "unknown")
+            and sent_at is not None
+            and (now_utc - sent_at).total_seconds() > download_timeout_minutes * 60
+        )
+        if stalled:
+            _fail_adhoc(
+                history,
+                f"Stalled download exceeded timeout ({download_timeout_minutes}m)",
+                now_utc,
+            )
+        elif _is_terminal_failure_state(status_lower):
+            reason = (
+                str(tb_item["fail_message"])
+                if tb_item is not None and tb_item.get("fail_message")
+                else f"{display_name} reported status: {raw_status}"
+            )
+            _fail_adhoc(history, reason, now_utc)
+        else:
+            history.status_detail = status_lower or "downloading"
 
 
 async def _start_deliveries(
