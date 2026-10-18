@@ -181,6 +181,27 @@ async def test_deliver_now(overrides, allowed, db_session) -> None:
     assert (h.delivery_status == "pending") is allowed
 
 
+@pytest.mark.parametrize(
+    ("action", "start"),
+    [("retry_delivery", "failed"), ("deliver_now", "none")],
+)
+async def test_manual_delivery_undismisses_row(action, start, db_session) -> None:
+    """A dismissed row re-enters Active Pushes once the user re-queues delivery."""
+    h = await _pending(
+        db_session,
+        delivery_status=start,
+        deliver_enabled=False,
+        is_dismissed=True,
+        completed_at=datetime.now(timezone.utc),
+        status_detail="completed",
+    )
+
+    assert await getattr(worker, action)(db_session, h.id) is True
+
+    await db_session.refresh(h)
+    assert h.is_dismissed is False
+
+
 async def test_recovery_resets_delivering_and_deletes_part_files(
     db_session, tmp_path
 ) -> None:

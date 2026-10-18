@@ -470,6 +470,7 @@ async def retry_delivery(session: AsyncSession, history_id: int) -> bool:
         return False
     history.delivery_status = DeliveryStatus.PENDING.value
     history.delivery_error = None
+    history.is_dismissed = False
     await session.commit()
     await enqueue_delivery(history_id)
     return True
@@ -518,6 +519,7 @@ async def deliver_now(session: AsyncSession, history_id: int) -> bool:
     history.deliver_enabled = True
     history.delivery_status = DeliveryStatus.PENDING.value
     history.delivery_error = None
+    history.is_dismissed = False
     await session.commit()
     await enqueue_delivery(history_id)
     return True
