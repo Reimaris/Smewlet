@@ -4561,7 +4561,6 @@ async def run_system_check(request: Request):
                 <div class="min-w-0">
                     <div class="flex items-center gap-2">
                         <span class="font-semibold text-white text-xs truncate">{html_escape.escape(item["name"])}</span>
-                        <span class="text-[10px] text-[#71717a] border border-[#3f3f46]/50 rounded px-1.5 py-0.2 shrink-0">{html_escape.escape(item["category"])}</span>
                     </div>
                     <div class="text-[11px] {status_color} mt-0.5 truncate">{html_escape.escape(item["msg"])}</div>
                 </div>
@@ -4572,25 +4571,36 @@ async def run_system_check(request: Request):
         </div>
         """
 
-    html_parts.append('<div class="space-y-2.5">')
-    pos = 0
-    while pos < len(results):
-        group = results[pos].get("group")
-        end = pos + 1
-        while group and end < len(results) and results[end].get("group") == group:
-            end += 1
-        if not group:
-            html_parts.append(render_row(results[pos], boxed=False))
-        else:
-            rows = "".join(render_row(r, boxed=True) for r in results[pos:end])
-            html_parts.append(
-                '<div class="bg-[#141418] border border-[#2d2d38] rounded-lg '
-                'divide-y divide-[#2d2d38] overflow-hidden">'
-                '<div class="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider '
-                f'text-[#71717a] bg-[#18181f]">{html_escape.escape(group)}</div>'
-                f"{rows}</div>"
-            )
-        pos = end
+    # Soft group: one section per category (first-appearance order); inside it,
+    # consecutive probes sharing a hard "group" share one box
+    sections: dict[str, list[dict[str, Any]]] = {}
+    for r in results:
+        sections.setdefault(str(r["category"]), []).append(r)
+    html_parts.append('<div class="space-y-5">')
+    for category, items in sections.items():
+        html_parts.append(
+            '<div class="space-y-2">'
+            '<div class="flex items-center gap-2 px-1 text-[10px] font-bold uppercase '
+            f'tracking-wider text-[#71717a]"><span>{html_escape.escape(category)}</span>'
+            f'<span class="font-mono text-[#52525b]">{len(items)}</span>'
+            '<span class="flex-1 border-t border-[#2d2d38]"></span></div>'
+        )
+        pos = 0
+        while pos < len(items):
+            group = items[pos].get("group")
+            end = pos + 1
+            while group and end < len(items) and items[end].get("group") == group:
+                end += 1
+            if not group:
+                html_parts.append(render_row(items[pos], boxed=False))
+            else:
+                rows = "".join(render_row(r, boxed=True) for r in items[pos:end])
+                html_parts.append(
+                    '<div class="bg-[#141418] border border-[#2d2d38] rounded-lg '
+                    f'divide-y divide-[#2d2d38] overflow-hidden">{rows}</div>'
+                )
+            pos = end
+        html_parts.append("</div>")
     html_parts.append("</div>")
 
     # Summary bar

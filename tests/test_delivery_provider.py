@@ -454,6 +454,11 @@ async def test_system_check_groups_delivery_rows_in_one_box(
     assert "Delivery: movies" in box and "Delivery: shows" in box
     # rows of other services are not pulled into the box
     assert "SQLite Database" not in box
+    # soft group: one heading per category, rows listed under it
+    assert html.count(">Core Infrastructure</span>") == 1
+    assert html.count(">Delivery</span>") == 1
+    assert html.index(">Delivery</span>") < html.index("Delivery: movies")
+    assert html.index(">Core Infrastructure</span>") < html.index("SQLite Database")
 
 
 async def test_system_check_skips_inactive_or_absent_delivery(
