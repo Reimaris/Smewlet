@@ -259,6 +259,7 @@
                 <form id="provider-form" hx-post="/settings/provider{% if provider %}/{{ provider.id }}{% endif %}" hx-target="#provider-form-status" hx-swap="innerHTML" hx-on::before-swap="if (event.detail.xhr.status === 422 || event.detail.xhr.status === 409) { event.detail.shouldSwap = true; event.detail.isError = false; }" class="space-y-6">
                     <input type="hidden" name="provider_type" :value="providerType" value="{{ ptype }}">
                     <input type="hidden" name="category" :value="providerCategory" value="{{ pcat }}">
+                    <input type="hidden" name="provider_id" value="{{ provider.id if provider else '' }}">
 
                     <!-- Basic Info -->
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -385,7 +386,6 @@
 
                     <!-- SIMKL CONFIGURATION (AUTH V2 — RFC 8628 Device Flow & Auto-Refresh) --> <!-- provider-specific code (allowlisted): begin -->
                     <fieldset :disabled="providerType !== 'simkl'" x-show="providerType === 'simkl'" class="border-0 p-0 m-0 space-y-6">
-                        <input type="hidden" name="provider_id" value="{{ provider.id if provider else '' }}">
                         <input type="hidden" id="simkl-refresh-token" name="refresh_token" value="{{ cfg.get('refresh_token', '') or '' }}">
                         <input type="hidden" id="simkl-token-expires-at" name="token_expires_at" value="{{ cfg.get('token_expires_at', '') or '' }}">
 

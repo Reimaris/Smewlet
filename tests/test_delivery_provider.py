@@ -391,6 +391,18 @@ async def test_edit_modal_prefills_delivery_config(
     assert 'name="min_free_buffer_gb" value="2"' in html
 
 
+async def test_edit_modal_sends_provider_id_outside_disabled_fieldset(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    """The test button posts the form; a disabled fieldset would drop provider_id."""
+    provider = await make_delivery_provider(db_session)
+    await db_session.commit()
+    html = (await async_client.get(f"/settings/provider/{provider.id}/edit")).text
+    hidden = f'<input type="hidden" name="provider_id" value="{provider.id}">'
+    assert html.count(hidden) == 1
+    assert html.index(hidden) < html.index("SIMKL CONFIGURATION")
+
+
 # --- System check probe & capabilities (m78-13) -------------------------------
 
 
