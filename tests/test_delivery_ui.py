@@ -438,3 +438,51 @@ async def test_provider_modal_media_server_fields(async_client, db_session) -> N
     assert "Experimental" in plex_block
     assert "Experimental" not in jellyfin_block
     assert is_experimental("local_directory") is False
+
+
+# --- Provider dialog: dropdown, prefill, help (m80-05) --------------------------
+
+HELP_FIELDS = (
+    "movies_path",
+    "shows_path",
+    "anime_path",
+    "anime_movies_path",
+    "movie_template",
+    "show_template",
+    "anime_template",
+    "anime_movie_template",
+    "min_free_buffer_gb",
+    "delete_cloud_after_delivery",
+    "sab_path_map_remote",
+    "sab_path_map_local",
+    "scan_server",
+    "scan_plex_url",
+    "scan_plex_token",
+    "scan_jellyfin_url",
+    "scan_jellyfin_api_key",
+    "scan_path_map_remote",
+    "scan_path_map_local",
+)
+
+
+async def test_new_provider_modal_prefills_templates_and_helps(async_client) -> None:
+    html = (await async_client.get("/settings/provider/new")).text
+
+    assert (
+        'value="{title} ({year})/{title} ({year}) [{resolution} {source}].{ext}"'
+        in html
+    )
+    assert 'placeholder="/media/movies"' in html
+    assert 'value="/media/movies"' not in html
+    assert '<select name="scan_server"' in html
+    for field in HELP_FIELDS:
+        assert f'data-help="{field}"' in html, field
+
+
+async def test_edit_modal_marks_selected_media_server(async_client, db_session) -> None:
+    provider = await make_delivery_provider(db_session, scan_server="jellyfin")
+    await db_session.commit()
+    html = (await async_client.get(f"/settings/provider/{provider.id}/edit")).text
+
+    assert '<option value="jellyfin" selected>' in html
+    assert '<option value="plex" selected>' not in html

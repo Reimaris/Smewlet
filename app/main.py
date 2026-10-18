@@ -1916,9 +1916,11 @@ async def provider_modal(
         downloader_name = await _active_downloader_name(session)
         delivery_provider = await provider_service.get_delivery_provider(session)
 
-    delivery_config = None
-    if provider is not None and provider.type == "local_directory":
-        delivery_config = _delivery_form_values(provider)
+    delivery_config = _delivery_form_values(
+        provider
+        if provider is not None and provider.type == "local_directory"
+        else None
+    )
     new_type = type.strip().lower() if type.strip().lower() in _WATCHLIST_TYPES else ""
     return templates.TemplateResponse(
         request=request,

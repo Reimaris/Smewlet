@@ -591,82 +591,60 @@
 
                     <!-- LOCAL DIRECTORY DELIVERY CONFIGURATION -->
                     {% set dcfg = delivery_config if delivery_config else {} %}
-                    <fieldset :disabled="providerType !== 'local_directory'" x-show="providerType === 'local_directory'" class="border-0 p-0 m-0 space-y-6">
+                    {% macro dfield(label, name, help, placeholder='', value=None, wide=False, type='text', pill='') %}
+                    <div class="flex flex-col{% if wide %} md:col-span-2{% endif %}">
+                        <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">{{ label }}{% if pill %} <span class="ml-2">{{ pill }}</span>{% endif %}</label>
+                        <input type="{{ type }}" name="{{ name }}" value="{{ value if value is not none else '' }}"{% if type == 'password' %} autocomplete="off"{% endif %} class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{{ placeholder }}">
+                        <p class="text-xs text-[#71717a] mt-1" data-help="{{ name }}">{{ help }}</p>
+                    </div>
+                    {% endmacro %}
+                    {% set tpl_vars = 'Placeholders: {title} {entry_title} {year} {season:02d} {episode:02d} {episode_title} {resolution} {source} {ext}.' %}
+                    <fieldset :disabled="providerType !== 'local_directory'" x-show="providerType === 'local_directory'" x-data="{ scanServer: '{{ dcfg.scan_server or 'none' }}' }" class="border-0 p-0 m-0 space-y-6">
                         <p class="text-xs text-[#a1a1aa]">Absolute paths as seen by this container. Leave a path empty to skip that media type.</p>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Movies path</label>
-                                <input type="text" name="movies_path" value="{{ dcfg.movies_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/movies">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Shows path</label>
-                                <input type="text" name="shows_path" value="{{ dcfg.shows_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/tv">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime path</label>
-                                <input type="text" name="anime_path" value="{{ dcfg.anime_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/anime">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime movies path</label>
-                                <input type="text" name="anime_movies_path" value="{{ dcfg.anime_movies_path if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media/anime-movies">
-                            </div>
-                            <div class="flex flex-col md:col-span-2">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Movie template</label>
-                                <input type="text" name="movie_template" value="{{ dcfg.movie_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{title} ({year})/{title} ({year}) [{resolution} {source}].{ext}">
-                            </div>
-                            <div class="flex flex-col md:col-span-2">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Show template</label>
-                                <input type="text" name="show_template" value="{{ dcfg.show_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{episode:02d} - {episode_title}.{ext}">
-                            </div>
-                            <div class="flex flex-col md:col-span-2">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime template</label>
-                                <input type="text" name="anime_template" value="{{ dcfg.anime_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{entry_title} ({year})/Season 01/{entry_title} - S01E{episode:02d} - {episode_title}.{ext}">
-                            </div>
-                            <div class="flex flex-col md:col-span-2">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Anime movie template</label>
-                                <input type="text" name="anime_movie_template" value="{{ dcfg.anime_movie_template if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{entry_title} ({year})/{entry_title} ({year}) [{resolution} {source}].{ext}">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Free-space buffer (GB, 0 = off)</label>
-                                <input type="text" name="min_free_buffer_gb" value="{{ dcfg.min_free_buffer_gb if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="5">
-                            </div>
+                            {{ dfield('Movies path', 'movies_path', 'Where movies are delivered (e.g. /media/movies).', '/media/movies', dcfg.movies_path) }}
+                            {{ dfield('Shows path', 'shows_path', 'Where TV shows are delivered (e.g. /media/series).', '/media/series', dcfg.shows_path) }}
+                            {{ dfield('Anime path', 'anime_path', 'Where anime series are delivered (e.g. /media/anime).', '/media/anime', dcfg.anime_path) }}
+                            {{ dfield('Anime movies path', 'anime_movies_path', 'Where anime movies are delivered (e.g. /media/anime-movies).', '/media/anime-movies', dcfg.anime_movies_path) }}
+                            {{ dfield('Movie template', 'movie_template', 'Folder and file name for movies. ' ~ tpl_vars, dcfg.movie_template, dcfg.movie_template, wide=True) }}
+                            {{ dfield('Show template', 'show_template', 'Folder and file name for show episodes. ' ~ tpl_vars, dcfg.show_template, dcfg.show_template, wide=True) }}
+                            {{ dfield('Anime template', 'anime_template', 'Folder and file name for anime episodes. ' ~ tpl_vars, dcfg.anime_template, dcfg.anime_template, wide=True) }}
+                            {{ dfield('Anime movie template', 'anime_movie_template', 'Folder and file name for anime movies. ' ~ tpl_vars, dcfg.anime_movie_template, dcfg.anime_movie_template, wide=True) }}
+                            {{ dfield('Free-space buffer (GB, 0 = off)', 'min_free_buffer_gb', 'Cloud downloads pause when less free space than this remains (e.g. 5).', '5', dcfg.min_free_buffer_gb) }}
                             <div></div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">SABnzbd path map: remote prefix</label>
-                                <input type="text" name="sab_path_map_remote" value="{{ dcfg.sab_path_map_remote if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/downloads">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">SABnzbd path map: local prefix</label>
-                                <input type="text" name="sab_path_map_local" value="{{ dcfg.sab_path_map_local if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/mnt/downloads">
-                            </div>
+                            {{ dfield('SABnzbd path map: remote prefix', 'sab_path_map_remote', 'Path as SABnzbd sees it (e.g. /downloads).', '/downloads', dcfg.sab_path_map_remote) }}
+                            {{ dfield('SABnzbd path map: local prefix', 'sab_path_map_local', 'Path as Smewlet sees it (e.g. /mnt/downloads). Smewlet swaps its prefix for the SABnzbd prefix. Set both or leave both empty.', '/mnt/downloads', dcfg.sab_path_map_local) }}
                             <div class="md:col-span-2 border-t border-[#3f3f46] pt-4">
                                 <h4 class="text-sm font-semibold text-white">Media server refresh (optional)</h4>
                                 <p class="text-xs text-[#a1a1aa]">After a delivery batch, Smewlet asks your media server to rescan the new folders. Failures only log and notify; delivery is never affected.</p>
                             </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Plex URL <span class="ml-2">{{ experimental_pill('plex') }}</span></label>
-                                <input type="text" name="scan_plex_url" value="{{ dcfg.scan_plex_url or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="http://plex:32400">
+                            <div class="flex flex-col md:col-span-2">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Media server</label>
+                                <select name="scan_server" x-model="scanServer" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors">
+                                    <option value="none" {% if dcfg.scan_server == 'none' %}selected{% endif %}>None</option>
+                                    <option value="plex" {% if dcfg.scan_server == 'plex' %}selected{% endif %}>Plex</option>
+                                    <option value="jellyfin" {% if dcfg.scan_server == 'jellyfin' %}selected{% endif %}>Jellyfin</option>
+                                </select>
+                                <p class="text-xs text-[#71717a] mt-1" data-help="scan_server">Only the selected server is refreshed; the other one's settings are cleared on save.</p>
                             </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Plex token</label>
-                                <input type="password" name="scan_plex_token" value="" autocomplete="off" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{{ '•••••• (unchanged)' if provider and provider.type == 'local_directory' and dcfg.scan_plex_token_set else '' }}">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Jellyfin URL</label>
-                                <input type="text" name="scan_jellyfin_url" value="{{ dcfg.scan_jellyfin_url or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="http://jellyfin:8096">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Jellyfin API key</label>
-                                <input type="password" name="scan_jellyfin_api_key" value="" autocomplete="off" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{{ '•••••• (unchanged)' if provider and provider.type == 'local_directory' and dcfg.scan_jellyfin_api_key_set else '' }}">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Media server path map: server prefix</label>
-                                <input type="text" name="scan_path_map_remote" value="{{ dcfg.scan_path_map_remote or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media">
-                            </div>
-                            <div class="flex flex-col">
-                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Media server path map: Smewlet prefix</label>
-                                <input type="text" name="scan_path_map_local" value="{{ dcfg.scan_path_map_local or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/data/media">
-                            </div>
+                            <template x-if="scanServer === 'plex'">
+                                <div class="contents">
+                                    {{ dfield('Plex URL', 'scan_plex_url', 'Address of your Plex server (e.g. http://plex:32400).', 'http://plex:32400', dcfg.scan_plex_url, pill=experimental_pill('plex')) }}
+                                    {{ dfield('Plex token', 'scan_plex_token', 'Your Plex token; leave blank to keep the stored one.', '•••••• (unchanged)' if dcfg.scan_plex_token_set else '', '', type='password') }}
+                                </div>
+                            </template>
+                            <template x-if="scanServer === 'jellyfin'">
+                                <div class="contents">
+                                    {{ dfield('Jellyfin URL', 'scan_jellyfin_url', 'Address of your Jellyfin server (e.g. http://jellyfin:8096).', 'http://jellyfin:8096', dcfg.scan_jellyfin_url) }}
+                                    {{ dfield('Jellyfin API key', 'scan_jellyfin_api_key', 'API key from the Jellyfin dashboard; leave blank to keep the stored one.', '•••••• (unchanged)' if dcfg.scan_jellyfin_api_key_set else '', '', type='password') }}
+                                </div>
+                            </template>
+                            <template x-if="scanServer !== 'none'">
+                                <div class="contents">
+                                    {{ dfield('Media server path map: server prefix', 'scan_path_map_remote', 'Path as Jellyfin/Plex sees it (e.g. /media).', '/media', dcfg.scan_path_map_remote) }}
+                                    {{ dfield('Media server path map: Smewlet prefix', 'scan_path_map_local', 'Path as Smewlet sees it (e.g. /media). Smewlet swaps its prefix for the server prefix before the refresh call. Set both or leave both empty.', '/data/media', dcfg.scan_path_map_local) }}
+                                </div>
+                            </template>
                             <label class="inline-flex items-center gap-2 text-sm text-white cursor-pointer md:col-span-2">
                                 <span class="relative inline-flex shrink-0">
 <input type="checkbox" name="delete_cloud_after_delivery" value="true" {% if dcfg.delete_cloud_after_delivery %}checked{% endif %} class="sr-only peer">
@@ -674,6 +652,7 @@
 </span>
                                 <span>Delete the cloud copy after successful delivery</span>
                             </label>
+                            <p class="text-xs text-[#71717a] -mt-4 md:col-span-2" data-help="delete_cloud_after_delivery">Removes the file from TorBox/Premiumize once it is safely in your library (e.g. to save cloud storage).</p>
                             <label class="inline-flex items-center gap-2 text-sm text-white cursor-pointer md:col-span-2">
                                 <span class="relative inline-flex shrink-0">
 <input type="checkbox" name="is_active" value="true" {% if provider and provider.is_active %}checked{% endif %} class="sr-only peer">
