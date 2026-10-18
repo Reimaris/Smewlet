@@ -121,6 +121,11 @@ def rate_limit_source_label(sources: list[RateLimitSource]) -> str:
     return " + ".join(names) if names else "Rate limit"
 
 
+def clock_label(moment: datetime) -> str:
+    """Local ``HH:MM`` for a (UTC or aware) datetime."""
+    return f"{moment.astimezone():%H:%M}"
+
+
 def resume_time_label() -> str:
     """Human-readable resume time for the longest active provider cooldown."""
     tb_rem = get_downloader_cooldown_remaining()
@@ -129,7 +134,7 @@ def resume_time_label() -> str:
     if remaining <= 0:
         return "resuming shortly"
     resume_at = datetime.now().astimezone() + timedelta(seconds=remaining)
-    return f"resumes {resume_at:%H:%M}"
+    return f"resumes {clock_label(resume_at)}"
 
 
 def clear_all_rate_limit_cooldowns() -> None:
