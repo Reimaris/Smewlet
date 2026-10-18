@@ -598,6 +598,7 @@ async def test_test_endpoint_includes_servers(
         {"server": "jellyfin", "ok": False, "detail": "HTTP 401 Unauthorized"},
     ]
     assert seen[0].scan_plex_token == "test-plex-token"  # blank -> stored token
+    assert seen[0].movies_path == str(tmp_path)  # roots reach the library check
     assert "test-plex-token" not in resp.text
 
 

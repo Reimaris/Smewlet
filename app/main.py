@@ -2171,7 +2171,10 @@ async def _test_delivery_paths(request: Request) -> JSONResponse:
             provider = await session.get(Provider, int(raw_id))
             if provider is not None and provider.type == "local_directory":
                 existing = DeliveryConfig.from_provider(provider)
-    scan_cfg = DeliveryConfig(**_scan_config_from_form(form, existing))
+    scan_cfg = DeliveryConfig(
+        **_scan_config_from_form(form, existing),
+        **{p["field"]: p["path"] for p in paths},
+    )
     scan_error = validate_scan_settings(scan_cfg)
     if scan_error:
         return JSONResponse(
