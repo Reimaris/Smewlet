@@ -18,8 +18,11 @@ from app.db.models import DeliveredFile, DeliveryStatus, DownloadHistory
 from app.services.delivery.config import DeliveryConfig
 from app.services.delivery.engines import (
     CloudStreamEngine,
+    DeliveryAborted,
     DeliveryEngine,
     LocalLinkEngine,
+    clear_abort,
+    request_abort,
 )
 from app.services.delivery.folder_pin import pin_delivery_folders
 from app.services.delivery.planner import build_delivery_plan
@@ -152,11 +155,22 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
         await _deliver(session, history)
     except asyncio.CancelledError:
         raise  # stays 'delivering'; startup recovery resets it
+    except DeliveryAborted:
+        logger.info("[DELIVERY] history %s aborted", history_id)
+        await session.rollback()
+        history.delivery_status = DeliveryStatus.NONE.value
+        history.delivery_error = None
+        history.deliver_enabled = False
+        _reset_progress(history)
+        await session.commit()
+        return
     except Exception as exc:
         logger.exception("[DELIVERY] history %s crashed", history_id)
         await session.rollback()
         history.delivery_status = DeliveryStatus.FAILED.value
         history.delivery_error = redact_text(f"{type(exc).__name__}: {exc}")[:200]
+    finally:
+        clear_abort(history_id)
     _reset_progress(history)
     await session.commit()
     if history.delivery_status == DeliveryStatus.DELIVERED.value:
@@ -458,6 +472,26 @@ async def retry_delivery(session: AsyncSession, history_id: int) -> bool:
     history.delivery_error = None
     await session.commit()
     await enqueue_delivery(history_id)
+    return True
+
+
+async def abort_delivery(session: AsyncSession, history_id: int) -> bool:
+    """Abort a queued or running cloud delivery; SABnzbd rows are not abortable."""
+    history = await session.get(DownloadHistory, history_id)
+    if (
+        history is None
+        or history.downloader_type == "sabnzbd"
+        or history.delivery_status
+        not in (DeliveryStatus.PENDING.value, DeliveryStatus.DELIVERING.value)
+    ):
+        return False
+    if history.delivery_status == DeliveryStatus.PENDING.value:
+        history.delivery_status = DeliveryStatus.NONE.value
+        history.delivery_error = None
+        history.deliver_enabled = False
+        await session.commit()
+    else:
+        request_abort(history_id)
     return True
 
 

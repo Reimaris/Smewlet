@@ -34,6 +34,25 @@ logger = logging.getLogger(__name__)
 CHUNK_BYTES = 1024 * 1024
 EXPIRED_STATUSES = frozenset({401, 403, 404})
 
+_abort_requested: set[int] = set()
+
+
+class DeliveryAborted(Exception):
+    """The user aborted a running delivery."""
+
+
+def request_abort(history_id: int) -> None:
+    _abort_requested.add(history_id)
+
+
+def is_abort_requested(history_id: int) -> bool:
+    return history_id in _abort_requested
+
+
+def clear_abort(history_id: int) -> None:
+    _abort_requested.discard(history_id)
+
+
 ProgressCallback = Callable[[int, int], Awaitable[None]]  # (bytes_done, bytes_total)
 
 
@@ -123,6 +142,8 @@ class _BaseEngine:
         one: Callable[[PlannedFile], Awaitable[None]],
     ) -> None:
         for planned in plan:
+            if is_abort_requested(history.id):
+                raise DeliveryAborted
             if planned.status != "pending":
                 await _record(session, history, planned, planned.status, planned.error)
                 continue
@@ -194,12 +215,12 @@ class CloudStreamEngine(_BaseEngine):
             )
             if link is None:
                 raise _FileError("LINK_EXPIRED")
-            await self._stream(link, planned.dest.full, cfg)
+            await self._stream(link, planned.dest.full, cfg, history.id)
 
         await self._run(session, history, plan, cfg, one)
 
     async def _stream(
-        self, link: DownloadLink, dest: Path, cfg: DeliveryConfig
+        self, link: DownloadLink, dest: Path, cfg: DeliveryConfig, history_id: int
     ) -> None:
         if _existing_target(dest, link.size_bytes):
             return
@@ -216,6 +237,8 @@ class CloudStreamEngine(_BaseEngine):
                         raise _FileError(f"HTTP {resp.status_code}")
                     with part.open("wb") as fh:
                         async for chunk in resp.aiter_bytes(CHUNK_BYTES):
+                            if is_abort_requested(history_id):
+                                raise DeliveryAborted
                             await asyncio.to_thread(fh.write, chunk)
                             written += len(chunk)
                             if self._progress is not None:

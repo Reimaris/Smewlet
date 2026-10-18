@@ -6024,6 +6024,16 @@ async def api_history_retry_delivery(history_id: int) -> Response:
     )
 
 
+@app.post("/api/history/{history_id}/abort-delivery")
+async def api_history_abort_delivery(history_id: int) -> Response:
+    """Abort a queued or running cloud delivery."""
+    return await _delivery_action(
+        history_id,
+        "abort_delivery",
+        "Only a queued or running cloud delivery can be aborted.",
+    )
+
+
 @app.post("/api/history/{history_id}/deliver")
 async def api_history_deliver_now(history_id: int) -> Response:
     """Start delivery for a finished cloud transfer that was not delivered."""

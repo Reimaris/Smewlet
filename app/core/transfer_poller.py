@@ -1988,6 +1988,8 @@ def _delivery_fields(
         "delivered_paths": paths.get(h.id, []),
         "can_retry_delivery": can_retry,
         "can_deliver_now": provider_active and is_deliver_now_allowed(h),
+        "can_abort_delivery": status in ("pending", "delivering")
+        and h.downloader_type != "sabnzbd",
     }
 
 
