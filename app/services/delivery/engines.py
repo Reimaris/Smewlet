@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import logging
 import os
 import posixpath
 import shutil
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.log_redaction import redact_text
 from app.db.models import DeliveredFile, DownloadHistory
 from app.services.delivery.config import DeliveryConfig
+from app.services.delivery.errors import describe_os_error
 from app.services.delivery.guard import (
     InsufficientStorage,
     check_free_space,
@@ -26,6 +28,8 @@ from app.services.delivery.guard import (
 from app.services.delivery.planner import PlannedFile
 from app.services.downloaders.base import DownloaderError, DownloadLink
 from app.services.downloaders.factory import get_downloader_client_for_type
+
+logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 1024 * 1024
 EXPIRED_STATUSES = frozenset({401, 403, 404})
@@ -139,8 +143,14 @@ class _BaseEngine:
                     f"Network error: {type(exc).__name__}",
                 )
             except OSError as exc:
-                code = errno.errorcode.get(exc.errno or 0, "OSError")
-                await _record(session, history, planned, "failed", f"OS error: {code}")
+                message = describe_os_error(exc, planned.dest.full)
+                logger.warning(
+                    "[DELIVERY] history %s: %s (errno=%s)",
+                    history.id,
+                    message,
+                    errno.errorcode.get(exc.errno or 0, "?"),
+                )
+                await _record(session, history, planned, "failed", message)
             else:
                 await _record(session, history, planned, "delivered", None)
 

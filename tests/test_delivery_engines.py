@@ -419,3 +419,26 @@ async def test_skipped_plan_entries_are_recorded(db_session, tmp_path) -> None:
         "UNMATCHED_EPISODE",
         None,
     )
+
+
+async def test_permission_error_is_readable(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    history = await make_history(db_session, nzb_guid="g-eacces")
+    use_client(_FakeClient([DownloadLink(name="a/ep.mkv", url=URL, size_bytes=3000)]))
+    _serve(monkeypatch)
+
+    def deny(*_a: Any, **_k: Any) -> None:
+        raise PermissionError(errno.EACCES, "denied")
+
+    monkeypatch.setattr(os, "replace", deny)
+    dest = tmp_path / "lib" / "ep.mkv"
+
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("a/ep.mkv", dest)], CFG
+    )
+
+    row = await _row(db_session)
+    assert row.status == "failed"
+    assert (row.error or "").startswith("Permission denied:")
+    assert "OS error" not in (row.error or "")
