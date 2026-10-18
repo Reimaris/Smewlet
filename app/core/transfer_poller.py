@@ -86,7 +86,7 @@ RATE_LIMIT_COOLDOWN_SECONDS: int = 900
 
 NOT_FOUND_GRACE_PERIOD_SECONDS = 900
 COMPLETED_RETENTION_SECONDS = 300
-FAILED_RETENTION_SECONDS = 300
+DELIVERED_RETENTION_SECONDS = 300
 UNPACK_GRACE_PERIOD_SECONDS = 600
 
 _poller_lock = asyncio.Lock()
@@ -1951,7 +1951,31 @@ _DELIVERY_BADGES = {
     DeliveryStatus.DELIVERING.value: "DELIVERING",
     DeliveryStatus.FAILED.value: "Delivery failed",
     DeliveryStatus.PAUSED.value: "Delivery paused",
+    DeliveryStatus.DELIVERED.value: "Delivered",
 }
+_DELIVERY_SECTION_STATUSES = _DELIVERY_ACTIVE + _DELIVERY_ATTENTION
+
+
+def assign_section(row: dict[str, Any]) -> str:
+    """Active Pushes section of a row: ``"deliveries"`` or ``"downloads"``."""
+    if row.get("delivery_status") in _DELIVERY_SECTION_STATUSES or (
+        row.get("delivery_status") == DeliveryStatus.DELIVERED.value
+        and row.get("is_delivery")
+    ):
+        return "deliveries"
+    return "downloads"
+
+
+def _delivery_sort_key(row: dict[str, Any]) -> tuple[int, int, float]:
+    """Deliveries order: active/offline head, queued (FIFO), attention, delivered."""
+    status, error = row["delivery_status"], row.get("delivery_error")
+    if status == DeliveryStatus.DELIVERING.value or error == "STORAGE_OFFLINE":
+        return (0, 0, 0.0)
+    if status == DeliveryStatus.PENDING.value:
+        return (1, row["queue_position"] or 10**6, 0.0)
+    if status == DeliveryStatus.DELIVERED.value:
+        return (3, 0, -float(row.get("_delivered_ts") or 0.0))
+    return (2, 0, 0.0)
 
 
 async def _delivery_context(
@@ -2055,6 +2079,9 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
     delivery_paths, delivery_provider_active = await _delivery_context(
         session, [h.id for h in rows]
     )
+    from app.services.delivery.worker import queued_history_ids
+
+    queued_ids = queued_history_ids()
     rate_limit_source: str = rate_limit_source_label(active_rate_limit_sources())
     active_rows: list[dict[str, Any]] = []
     seen_targets: set[tuple[int, int | None, int | None]] = set()
@@ -2081,20 +2108,9 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             or "429" in detail_lower
         )
 
-        failed_dt_raw = h.failed_at or h.created_at
-        failed_dt_utc: datetime | None = None
-        if failed_dt_raw is not None:
-            failed_dt_utc = (
-                failed_dt_raw.replace(tzinfo=timezone.utc)
-                if failed_dt_raw.tzinfo is None
-                else failed_dt_raw
-            )
         outage_match = _OUTAGE_DETAIL_RE.match(h.status_detail or "")
-        is_failed = (
-            not is_rate_limited
-            and (entity_status == "failed" or detail_lower.startswith("failed"))
-            and failed_dt_utc is not None
-            and (now_utc - failed_dt_utc).total_seconds() < FAILED_RETENTION_SECONDS
+        is_failed = not is_rate_limited and (
+            entity_status == "failed" or detail_lower.startswith("failed")
         )
         is_active_downloading = (
             entity_status == "downloading"
@@ -2118,10 +2134,23 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             and entity_status in ("completed", "downloaded")
         )
 
-        # Delivery rows stay visible past the retention window until settled/dismissed.
-        is_delivery = (
-            detail_lower == "completed"
-            and (h.delivery_status or "") in _DELIVERY_ACTIVE + _DELIVERY_ATTENTION
+        # Delivery rows stay visible past the retention window until settled/dismissed;
+        # delivered rows for DELIVERED_RETENTION_SECONDS after ``delivered_at``.
+        delivered_at_utc: datetime | None = None
+        if h.delivered_at is not None:
+            delivered_at_utc = (
+                h.delivered_at.replace(tzinfo=timezone.utc)
+                if h.delivered_at.tzinfo is None
+                else h.delivered_at
+            )
+        is_delivery = detail_lower == "completed" and (
+            (h.delivery_status or "") in _DELIVERY_SECTION_STATUSES
+            or (
+                h.delivery_status == DeliveryStatus.DELIVERED.value
+                and delivered_at_utc is not None
+                and (now_utc - delivered_at_utc).total_seconds()
+                < DELIVERED_RETENTION_SECONDS
+            )
         )
         if is_delivery:
             is_recently_completed = False
@@ -2154,8 +2183,31 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             )
         )
 
+        queue_position: int | None = None
+        queue_total: int | None = None
+        next_check_label: str | None = None
+        is_offline_pause = (
+            h.delivery_status == DeliveryStatus.PAUSED.value
+            and h.delivery_error == "STORAGE_OFFLINE"
+        )
         if is_delivery:
             status_badge = _DELIVERY_BADGES[h.delivery_status]
+            if h.delivery_status == DeliveryStatus.PENDING.value:
+                queue_total = len(queued_ids)
+                if h.id in queued_ids:
+                    queue_position = queued_ids.index(h.id) + 1
+                    status_badge = (
+                        f"Delivery queued ({queue_position} of {queue_total})"
+                    )
+            elif is_offline_pause:
+                from app.core.rate_limit_queue import clock_label
+                from app.services.delivery.offline import next_check_at
+
+                nxt = next_check_at()
+                next_check_label = clock_label(nxt) if nxt else None
+                status_badge = "Delivery paused: storage offline" + (
+                    f" (next check {next_check_label})" if next_check_label else ""
+                )
         elif is_recently_completed:
             status_badge = f"Ready on {DOWNLOADER_DISPLAY_NAMES.get(h.downloader_type, 'downloader')}"
         elif is_rate_limited:
@@ -2213,7 +2265,10 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             row_progress_pct = (
                 round(float(h.progress_pct or 0.0), 1) if delivering else 0.0
             )
-            if h.delivery_status in _DELIVERY_ATTENTION:
+            if h.delivery_status == DeliveryStatus.DELIVERED.value:
+                row_progress_pct = 100.0
+                row_speed_and_eta = "—"
+            elif h.delivery_status in _DELIVERY_ATTENTION:
                 row_speed_and_eta = "—"
             elif not delivering:
                 row_speed_and_eta = "Waiting for delivery slot"
@@ -2260,9 +2315,17 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
                     if is_recently_completed and completed_at_utc is not None
                     else None
                 ),
+                "queue_position": queue_position,
+                "queue_total": queue_total,
+                "is_delivery_paused": h.delivery_status == DeliveryStatus.PAUSED.value,
+                "next_check_label": next_check_label,
+                "_delivered_ts": (
+                    delivered_at_utc.timestamp() if delivered_at_utc else None
+                ),
                 **_delivery_fields(h, delivery_paths, delivery_provider_active),
             }
         )
+        active_rows[-1]["section"] = assign_section(active_rows[-1])
 
     dry_run_recs = get_dry_run_records()
     dry_run_rows: list[dict[str, Any]] = []
@@ -2304,10 +2367,16 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
                 "is_completed": False,
                 "is_dry_run": True,
                 "completed_at": None,
+                "section": "downloads",
             }
         )
 
-    return dry_run_rows + active_rows
+    downloads = [r for r in active_rows if r["section"] == "downloads"]
+    deliveries = sorted(
+        (r for r in active_rows if r["section"] == "deliveries"),
+        key=_delivery_sort_key,
+    )
+    return dry_run_rows + downloads + deliveries
 
 
 async def dismiss_failed_push(session: AsyncSession, history_id: int) -> bool:

@@ -162,10 +162,10 @@ async def test_completed_retention_in_active_pushes_and_poller_tick(
 
 
 @pytest.mark.anyio
-async def test_failed_pushes_retention_in_card5_removed_after_5_minutes(
+async def test_failed_pushes_stay_in_card5_until_dismissed(
     db_session: AsyncSession,
 ) -> None:
-    """Verify failed pushes stay in Card 5 (Tab 5) for 5 minutes and are removed afterwards."""
+    """Verify failed pushes stay in Card 5 (Tab 5) until dismissed."""
     now_utc = datetime.now(timezone.utc)
     movie = await make_movie(
         db_session,
@@ -193,15 +193,17 @@ async def test_failed_pushes_retention_in_card5_removed_after_5_minutes(
     assert failed_rows[0]["is_failed"] is True
     assert failed_rows[0]["status"] == "Failed (Auto-Push)"
 
-    # Aged past 300s (e.g., 305 seconds ago) -> removed from get_active_pushes
-    failed_hist.created_at = now_utc - timedelta(seconds=305)
+    # Failed downloads have no time limit: still listed long after 5 minutes
+    failed_hist.created_at = now_utc - timedelta(hours=2)
     await db_session.commit()
 
-    pushes_expired = await get_active_pushes(db_session)
-    failed_rows_expired = [
-        p for p in pushes_expired if p["history_id"] == failed_hist.id
-    ]
-    assert failed_rows_expired == []
+    pushes_old = await get_active_pushes(db_session)
+    assert [p["history_id"] for p in pushes_old] == [failed_hist.id]
+
+    # ... until dismissed
+    failed_hist.is_dismissed = True
+    await db_session.commit()
+    assert await get_active_pushes(db_session) == []
 
 
 @pytest.mark.anyio
