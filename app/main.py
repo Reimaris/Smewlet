@@ -4515,7 +4515,7 @@ async def run_system_check(request: Request):
     passed_count = sum(1 for r in results if r["ok"])
     failed_count = total_count - passed_count
 
-    html_parts: list[str] = ['<div class="space-y-4">']
+    html_parts: list[str] = ['<div class="space-y-4 w-full">']
 
     # Render vital role warning banners
     for w in vital_warnings:
@@ -4576,7 +4576,9 @@ async def run_system_check(request: Request):
     sections: dict[str, list[dict[str, Any]]] = {}
     for r in results:
         sections.setdefault(str(r["category"]), []).append(r)
-    html_parts.append('<div class="space-y-5">')
+    html_parts.append(
+        '<div class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-5 items-start">'
+    )
     for category, items in sections.items():
         html_parts.append(
             '<div class="space-y-2">'
