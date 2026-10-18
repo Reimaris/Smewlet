@@ -254,6 +254,48 @@ async def test_connection_failure_detail(requests) -> None:
     assert res[0].detail == "connection failed"
 
 
+def _jf_folders(*paths: str) -> list[dict[str, list[str]]]:
+    return [{"Locations": [p]} for p in paths]
+
+
+def _jf_handler(folders: object, status: int = 200) -> Callable[..., httpx.Response]:
+    def handler(r: httpx.Request) -> httpx.Response:
+        if r.url.path == "/Library/VirtualFolders":
+            return httpx.Response(status, json=folders)
+        return httpx.Response(200, json={})
+
+    return handler
+
+
+async def test_jellyfin_test_accepts_mapped_roots_inside_a_library(requests) -> None:
+    requests(_jf_handler(_jf_folders("/media/movies", "/media/anime")))
+    res = await refresh.test_media_servers(_jf_cfg())
+    assert res[0].ok and res[0].detail == ""
+
+
+async def test_jellyfin_test_flags_a_path_map_no_library_matches(requests) -> None:
+    requests(_jf_handler(_jf_folders("/media/movies", "/media/anime")))
+    res = await refresh.test_media_servers(_jf_cfg(scan_path_map_remote="/wrong"))
+    assert not res[0].ok
+    assert "No library contains /wrong/movies" in res[0].detail
+    assert "path map" in res[0].detail
+
+
+@pytest.mark.parametrize(("folders", "status"), [([], 200), (None, 403), ({}, 200)])
+async def test_jellyfin_test_skips_the_library_check_when_unavailable(
+    requests, folders: object, status: int
+) -> None:
+    requests(_jf_handler(folders, status))
+    res = await refresh.test_media_servers(_jf_cfg(scan_path_map_remote="/wrong"))
+    assert res[0].ok
+
+
+async def test_plex_test_flags_a_path_map_no_section_matches(requests) -> None:
+    requests(lambda r: httpx.Response(200, json=SECTIONS))
+    res = await refresh.test_media_servers(_plex_cfg(scan_path_map_remote="/wrong"))
+    assert not res[0].ok and "No library contains" in res[0].detail
+
+
 async def test_jellyfin_test_connection(requests) -> None:
     seen = requests(lambda r: httpx.Response(200, json={}))
     res = await refresh.test_media_servers(_jf_cfg())

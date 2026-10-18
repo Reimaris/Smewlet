@@ -28,6 +28,7 @@ PLEX_SECTIONS_PATH = "/library/sections"
 PLEX_SECTION_REFRESH_PATH = "/library/sections/{key}/refresh"
 PLEX_FULL_REFRESH_PATH = "/library/sections/all/refresh"
 JELLYFIN_INFO_PATH = "/System/Info"
+JELLYFIN_FOLDERS_PATH = "/Library/VirtualFolders"
 JELLYFIN_UPDATED_PATH = "/Library/Media/Updated"
 JELLYFIN_REFRESH_PATH = "/Library/Refresh"
 
@@ -77,6 +78,30 @@ def title_folder(dest_path: str, cfg: DeliveryConfig) -> Path | None:
         if len(rel.parts) >= 2:  # title folder + at least the file
             return root_path / rel.parts[0]
     return None
+
+
+def _unknown_roots_detail(cfg: DeliveryConfig, locations: list[str]) -> str:
+    """Error text when no configured root (as the server sees it) lies in a library.
+
+    Servers accept refresh calls for paths they do not know, so a wrong path map
+    would otherwise fail silently. Empty when fine or nothing can be compared.
+    """
+    roots = [
+        map_scan_path(root, cfg)
+        for root in (
+            cfg.movies_path,
+            cfg.shows_path,
+            cfg.anime_path,
+            cfg.anime_movies_path,
+        )
+        if root
+    ]
+    libs = [loc.rstrip("/") for loc in locations if loc]
+    if not roots or not libs:
+        return ""
+    if any(_is_under(r, lib) or _is_under(lib, r) for r in roots for lib in libs):
+        return ""
+    return "No library contains " + ", ".join(roots) + " (check the path map)"
 
 
 def _client(timeout: float) -> httpx.AsyncClient:
@@ -168,13 +193,23 @@ async def _plex_test(cfg: DeliveryConfig) -> RefreshResult:
     start = time.perf_counter()
     try:
         async with _client(TEST_TIMEOUT) as client:
-            await _call(
+            resp = await _call(
                 client,
                 "GET",
                 (cfg.scan_plex_url or "") + PLEX_SECTIONS_PATH,
                 headers=_plex_headers(cfg),
             )
-        return RefreshResult("plex", True, "test", "", _elapsed_ms(start))
+        try:
+            sections = resp.json().get("MediaContainer", {}).get("Directory", [])
+            locations = [
+                str(loc.get("path") or "")
+                for section in sections
+                for loc in section.get("Location", [])
+            ]
+        except (ValueError, AttributeError):
+            locations = []
+        detail = _unknown_roots_detail(cfg, locations)
+        return RefreshResult("plex", not detail, "test", detail, _elapsed_ms(start))
     except Exception as exc:  # noqa: BLE001
         return RefreshResult(
             "plex", False, "test", _error_detail(exc), _elapsed_ms(start)
@@ -217,15 +252,25 @@ async def _jellyfin_refresh(cfg: DeliveryConfig, folders: list[str]) -> RefreshR
 
 async def _jellyfin_test(cfg: DeliveryConfig) -> RefreshResult:
     start = time.perf_counter()
+    base = cfg.scan_jellyfin_url or ""
     try:
         async with _client(TEST_TIMEOUT) as client:
-            await _call(
-                client,
-                "GET",
-                (cfg.scan_jellyfin_url or "") + JELLYFIN_INFO_PATH,
-                headers=_jellyfin_headers(cfg),
-            )
-        return RefreshResult("jellyfin", True, "test", "", _elapsed_ms(start))
+            headers = _jellyfin_headers(cfg)
+            await _call(client, "GET", base + JELLYFIN_INFO_PATH, headers=headers)
+            try:  # the library check is best-effort: never fails the connection
+                resp = await _call(
+                    client, "GET", base + JELLYFIN_FOLDERS_PATH, headers=headers
+                )
+                folders = resp.json()
+                locations = [
+                    str(loc)
+                    for folder in (folders if isinstance(folders, list) else [])
+                    for loc in folder.get("Locations", [])
+                ]
+            except (httpx.HTTPError, ValueError, AttributeError):
+                locations = []
+        detail = _unknown_roots_detail(cfg, locations)
+        return RefreshResult("jellyfin", not detail, "test", detail, _elapsed_ms(start))
     except Exception as exc:  # noqa: BLE001
         return RefreshResult(
             "jellyfin", False, "test", _error_detail(exc), _elapsed_ms(start)
