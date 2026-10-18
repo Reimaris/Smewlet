@@ -486,3 +486,26 @@ async def test_edit_modal_marks_selected_media_server(async_client, db_session) 
 
     assert '<option value="jellyfin" selected>' in html
     assert '<option value="plex" selected>' not in html
+
+
+@pytest.mark.parametrize(
+    "status,downloader,shown",
+    [
+        ("delivering", "torbox", True),
+        ("pending", "premiumize", True),
+        ("delivering", "sabnzbd", False),
+        ("delivered", "torbox", False),
+    ],
+)
+async def test_card5_abort_button(
+    async_client: Any, db_session: Any, status: str, downloader: str, shown: bool
+) -> None:
+    row = await _delivery_row(
+        db_session, delivery_status=status, downloader_type=downloader
+    )
+    row.completed_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    row.delivered_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    html = await _active_html(async_client)
+    assert ('data-delivery-abort="true"' in html) is shown
+    assert (f"/api/history/{row.id}/abort-delivery" in html) is shown

@@ -25,4 +25,10 @@
         title="Copy the finished download into the library"
         class="bg-[#2a2a32] hover:bg-emerald-700 text-emerald-300 hover:text-white border border-emerald-700/60 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors">Deliver to Library</button>
 {% endif %}
+{% if p.can_abort_delivery %}
+<button type="button" hx-post="/api/history/{{ history_id }}/abort-delivery" hx-swap="none"
+        hx-confirm="Abort this delivery? Files already delivered stay in the library."
+        data-delivery-abort="true" title="Stop this delivery"
+        class="bg-transparent border border-red-800 text-red-400 hover:bg-red-600 hover:text-white text-xs font-semibold px-3 py-1.5 rounded-md transition-colors">Abort</button>
+{% endif %}
 {%- endmacro %}
