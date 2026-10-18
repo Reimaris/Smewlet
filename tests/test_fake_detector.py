@@ -12,6 +12,7 @@ from app.core.fake_detector import (
 )
 from app.core.push_engine import _score_and_partition_candidates
 from app.db.models import BlacklistedRelease
+from app.services.downloaders.base import DownloaderFile
 from tests.conftest import make_movie
 
 
@@ -877,3 +878,87 @@ def test_is_nzb_content_fake_allows_meta_password_0_and_real_password():
     is_fake, reason = is_nzb_content_fake(nzb_pass, media_type="movie")
     assert not is_fake
     assert reason is None
+
+
+@pytest.mark.parametrize(
+    "files,usable",
+    [
+        ([], False),
+        (None, False),
+        ([{"size": 123}, {"name": "  "}], False),
+        ([DownloaderFile(name="", size_bytes=0, path=None)], False),
+        (["", " "], False),
+        ([{"name": "Movie.2024.1080p.mkv", "size": 1}], True),
+        ([DownloaderFile(name="a.mkv", size_bytes=1)], True),
+    ],
+)
+def test_has_usable_file_entries(files: Any, usable: bool) -> None:
+    from app.core.fake_detector import has_usable_file_entries
+
+    assert has_usable_file_entries(files) is usable
+
+
+@pytest.mark.parametrize(
+    "client_type,files,expected",
+    [
+        # Cloud client, nameless entries -> bounded unpack grace (is_archive=True)
+        ("torbox", [{"size": 5}], (True, "TorBox returned empty file list", True)),
+        (
+            "torbox",
+            [DownloaderFile(name="", size_bytes=0)],
+            (True, "TorBox returned empty file list", True),
+        ),
+        ("torbox", [], (True, "TorBox returned empty file list", True)),
+        # SABnzbd unpacks before Completed: empty = pass
+        ("sabnzbd", [], (False, None, False)),
+    ],
+)
+def test_layer3_verdict_grace_for_unnamed_cloud_listing(
+    client_type: str, files: Any, expected: Any
+) -> None:
+    from types import SimpleNamespace
+
+    from app.core.transfer_poller import _layer3_verdict
+
+    verdict = _layer3_verdict(
+        files,
+        client=SimpleNamespace(provider_type=client_type),
+        skip_layer3=False,
+        display_name="TorBox",
+        media_type="movie",
+        is_season_pack=False,
+        release_name="Movie.2024",
+    )
+    assert verdict == expected
+
+
+def test_layer3_verdict_named_files_without_video_fail_immediately() -> None:
+    from types import SimpleNamespace
+
+    from app.core.transfer_poller import _layer3_verdict
+
+    is_fake, reason, is_archive = _layer3_verdict(
+        [{"name": "readme.txt", "size": 10}],
+        client=SimpleNamespace(provider_type="torbox"),
+        skip_layer3=False,
+        display_name="TorBox",
+        media_type="movie",
+        is_season_pack=False,
+        release_name="Movie.2024",
+    )
+    assert is_fake is True
+    assert is_archive is False
+    assert reason == "Downloaded payload lacks a valid playable video file"
+
+
+def test_layer3_logs_raw_filelist(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from app.core.fake_detector import is_transfer_filelist_fake
+
+    with caplog.at_level(logging.DEBUG, logger="app.core.fake_detector"):
+        is_transfer_filelist_fake([{"size": 7}], release_name="Rel")
+    assert any(
+        "Raw filelist" in r.message and "keys=['size']" in r.message
+        for r in caplog.records
+    )

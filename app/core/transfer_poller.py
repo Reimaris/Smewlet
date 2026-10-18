@@ -37,7 +37,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.anime_titles import anime_title_for
 from app.core.failure_logger import log_failure
-from app.core.fake_detector import is_transfer_filelist_fake
+from app.core.fake_detector import has_usable_file_entries, is_transfer_filelist_fake
 from app.core.outage import is_queued_detail
 from app.core.parser import build_release_feature_pills, parse_release_name
 from app.core.prerequisites import setup_blocks
@@ -362,6 +362,36 @@ def _normalize_progress_pct(raw_progress: Any, status_lower: str) -> float:
     if 0.0 < val <= 1.0:
         return round(val * 100.0, 1)
     return round(min(val, 100.0), 1)
+
+
+def _layer3_verdict(
+    files: list[Any],
+    *,
+    client: Any,
+    skip_layer3: bool,
+    display_name: str,
+    media_type: str,
+    is_season_pack: bool,
+    release_name: str | None,
+) -> tuple[bool, str | None, bool]:
+    """Layer 3 verdict for a completed transfer: (is_fake, reason, is_unextracted_archive).
+
+    A cloud client that lists no usable (named) files yet is treated as still
+    unpacking, so the bounded UNPACK_GRACE_PERIOD_SECONDS applies.
+    """
+    if skip_layer3:
+        return False, None, False
+    if client is not None and not has_usable_file_entries(files):
+        if client.provider_type == "sabnzbd":
+            # SABnzbd unpacks before reporting Completed: empty listing = pass.
+            return False, None, False
+        return True, f"{display_name} returned empty file list", True
+    return is_transfer_filelist_fake(
+        files,
+        media_type=media_type,
+        is_season_pack=is_season_pack,
+        release_name=release_name,
+    )
 
 
 def _is_terminal_failure_state(status_lower: str) -> bool:
@@ -1375,31 +1405,15 @@ async def _run_transfer_poller_tick_with_session(
             )
             media_type_str = "movie" if is_movie else "episode"
             is_sp = bool(season is not None and episode is None and not is_movie)
-            if skip_layer3:
-                is_fake, fake_reason, is_unextracted_archive = False, None, False
-            elif (
-                not tb_files
-                and client is not None
-                and client.provider_type == "sabnzbd"
-            ):
-                # SABnzbd unpacks before reporting Completed: empty listing = pass.
-                is_fake, fake_reason, is_unextracted_archive = False, None, False
-            elif not tb_files and client is not None:
-                # Cloud client reported COMPLETED but lists no files yet: unpack grace.
-                is_fake, fake_reason, is_unextracted_archive = (
-                    True,
-                    f"{display_name} returned empty file list",
-                    True,
-                )
-            else:
-                is_fake, fake_reason, is_unextracted_archive = (
-                    is_transfer_filelist_fake(
-                        tb_files,
-                        media_type=media_type_str,
-                        is_season_pack=is_sp,
-                        release_name=history.nzb_title,
-                    )
-                )
+            is_fake, fake_reason, is_unextracted_archive = _layer3_verdict(
+                tb_files,
+                client=client,
+                skip_layer3=skip_layer3,
+                display_name=display_name,
+                media_type=media_type_str,
+                is_season_pack=is_sp,
+                release_name=history.nzb_title,
+            )
 
             if is_unextracted_archive:
                 if history.unpack_started_at is None:
@@ -1713,21 +1727,15 @@ async def _poll_adhoc_transfers(
             is_sp = (
                 not is_movie and parse_release_name(history.nzb_title).episode is None
             )
-            is_fake, fake_reason, is_archive = False, None, False
-            if not skip_layer3 and not files and client is not None:
-                if client.provider_type != "sabnzbd":
-                    is_fake, fake_reason, is_archive = (
-                        True,
-                        f"{display_name} returned empty file list",
-                        True,
-                    )
-            elif not skip_layer3:
-                is_fake, fake_reason, is_archive = is_transfer_filelist_fake(
-                    files,
-                    media_type="movie" if is_movie else "episode",
-                    is_season_pack=is_sp,
-                    release_name=history.nzb_title,
-                )
+            is_fake, fake_reason, is_archive = _layer3_verdict(
+                files,
+                client=client,
+                skip_layer3=skip_layer3,
+                display_name=display_name,
+                media_type="movie" if is_movie else "episode",
+                is_season_pack=is_sp,
+                release_name=history.nzb_title,
+            )
             if is_archive:
                 history.unpack_started_at = history.unpack_started_at or now_utc
                 started = history.unpack_started_at

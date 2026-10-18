@@ -362,9 +362,12 @@ def _extract_file_entries(files: list[Any]) -> list[tuple[str, int]]:
     entries: list[tuple[str, int]] = []
     for f in files:
         if isinstance(f, str):
-            entries.append((f, 0))
+            if f.strip():
+                entries.append((f, 0))
         elif hasattr(f, "size_bytes") and hasattr(f, "name"):  # DownloaderFile
-            entries.append((str(f.path or f.name), int(f.size_bytes or 0)))
+            fname = str(f.path or f.name or "")
+            if fname.strip():
+                entries.append((fname, int(f.size_bytes or 0)))
         elif isinstance(f, dict):
             name = f.get("name") or f.get("short_name") or f.get("path")
             raw_size = f.get("size") if f.get("size") is not None else f.get("bytes")
@@ -374,12 +377,36 @@ def _extract_file_entries(files: list[Any]) -> list[tuple[str, int]]:
                     size_int = int(raw_size)
                 except (ValueError, TypeError):
                     size_int = 0
-            if name and isinstance(name, str):
+            if name and isinstance(name, str) and name.strip():
                 entries.append((name, size_int))
             nested = f.get("files")
             if isinstance(nested, list):
                 entries.extend(_extract_file_entries(nested))
     return entries
+
+
+def has_usable_file_entries(files: list[Any] | None) -> bool:
+    """True when the downloader file list contains at least one named file."""
+    return bool(files) and bool(_extract_file_entries(files or []))
+
+
+def _describe_files_for_log(files: list[Any] | None, limit: int = 20) -> str:
+    """Compact raw file list description (type, name, size, keys) for debug logs."""
+    parts: list[str] = []
+    for f in (files or [])[:limit]:
+        if isinstance(f, dict):
+            parts.append(
+                f"dict(name={f.get('name')!r}, size={f.get('size')!r}, "
+                f"keys={sorted(f)})"
+            )
+        else:
+            parts.append(
+                f"{type(f).__name__}(name={getattr(f, 'name', f)!r}, "
+                f"size={getattr(f, 'size_bytes', None)!r})"
+            )
+    extra = len(files or []) - limit
+    suffix = f", ... +{extra} more" if extra > 0 else ""
+    return f"[{', '.join(parts)}{suffix}]"
 
 
 def _extract_file_names(files: list[Any]) -> list[str]:
@@ -421,6 +448,13 @@ def is_transfer_filelist_fake(
             "[FAKEDETECT] [L3] Inspecting filelist for %s -> %s", rel_label, summary
         )
         return is_fake, reason, is_archive
+
+    logger.debug(
+        "[FAKEDETECT] [L3] Raw filelist for %s: %d entries %s",
+        rel_label,
+        len(tb_files or []),
+        _describe_files_for_log(tb_files),
+    )
 
     if not tb_files:
         return _ret(True, "Downloader returned empty file list", False)
