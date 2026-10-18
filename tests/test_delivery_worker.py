@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DeliveredFile, DownloadHistory
-from app.services.delivery import worker
+from app.services.delivery import refresh, worker
 from tests.conftest import (
     NAME,
     PAYLOAD,
@@ -479,3 +480,130 @@ async def test_active_adhoc_rows_keep_poller_awake(db_session) -> None:
     await db_session.commit()
 
     assert await count_downloading_entities(db_session) == 1
+
+
+# ---------------------------------------------------------------------------
+# Media server refresh after a burst (m79-03)
+# ---------------------------------------------------------------------------
+
+PLEX_CFG = {"scan_plex_url": "http://plex.example.com", "scan_plex_token": "test-tok"}
+
+
+@pytest.fixture(autouse=True)
+def _clear_refresh_folders():
+    worker._refresh_folders.clear()
+    yield
+    worker._refresh_folders.clear()
+
+
+@pytest.fixture
+def refresh_calls(monkeypatch):
+    """Record refresh calls and alerts; ``results`` is what the fake refresh returns."""
+    state: dict[str, Any] = {"refresh": [], "alerts": [], "results": []}
+
+    async def fake_refresh(cfg, folders):
+        state["refresh"].append(set(folders))
+        return state["results"]
+
+    async def fake_alert(session, flag, head, body):
+        state["alerts"].append((flag, head, body))
+
+    monkeypatch.setattr(worker, "refresh_media_servers", fake_refresh)
+    monkeypatch.setattr("app.services.notifications.dispatch_alert_message", fake_alert)
+    return state
+
+
+async def _deliver_two(db_session, downloader, tmp_path, **cfg) -> None:
+    await make_delivery_provider(
+        db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0, **cfg
+    )
+    downloader(FakeDownloaderClient())
+    for title in ("Example Show", "Other Show"):
+        h = await _pending(db_session, media_title=title)
+        await worker.process_delivery(db_session, h.id)
+
+
+async def test_burst_refreshes_once_with_all_title_folders(
+    db_session, downloader, tmp_path, refresh_calls
+) -> None:
+    await _deliver_two(db_session, downloader, tmp_path, **PLEX_CFG)
+    assert len(worker._refresh_folders) == 2
+
+    await worker._flush_refresh()
+
+    assert refresh_calls["refresh"] == [
+        {tmp_path / "Example Show (2018)", tmp_path / "Other Show (2018)"}
+    ]
+    assert worker._refresh_folders == set()
+    await worker._flush_refresh()
+    assert len(refresh_calls["refresh"]) == 1
+
+
+async def test_no_refresh_without_configured_server(
+    db_session, downloader, tmp_path, refresh_calls
+) -> None:
+    await _deliver_two(db_session, downloader, tmp_path)
+    await worker._flush_refresh()
+    assert refresh_calls["refresh"] == []
+
+
+async def test_no_refresh_when_nothing_delivered(refresh_calls, db_session) -> None:
+    await make_delivery_provider(db_session, **PLEX_CFG)
+    await db_session.commit()
+    await worker._flush_refresh()
+    assert refresh_calls["refresh"] == []
+
+
+async def test_failed_refresh_keeps_delivered_and_alerts_once(
+    db_session, downloader, tmp_path, refresh_calls
+) -> None:
+    refresh_calls["results"] = [
+        refresh.RefreshResult("plex", False, "full", "HTTP 401 Unauthorized"),
+        refresh.RefreshResult("jellyfin", False, "full", "timed out"),
+    ]
+    await _deliver_two(db_session, downloader, tmp_path, **PLEX_CFG)
+    refresh_calls["alerts"].clear()
+
+    await worker._flush_refresh()
+
+    alerts = [a for a in refresh_calls["alerts"] if a[1] == "Library refresh failed"]
+    assert len(alerts) == 1
+    flag, _, body = alerts[0]
+    assert flag == "notify_on_delivery_failed"
+    assert "Plex refresh failed: HTTP 401 Unauthorized" in body
+    assert "Jellyfin refresh failed: timed out" in body
+    rows = (await db_session.execute(select(DownloadHistory))).scalars()
+    assert {r.delivery_status for r in rows} == {"delivered"}
+
+
+async def test_flush_never_raises(
+    db_session, downloader, tmp_path, refresh_calls, monkeypatch
+) -> None:
+    async def boom(cfg, folders):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(worker, "refresh_media_servers", boom)
+    await _deliver_two(db_session, downloader, tmp_path, **PLEX_CFG)
+    await worker._flush_refresh()
+
+
+async def test_worker_loop_refreshes_after_retry_success(
+    db_session, downloader, tmp_path, refresh_calls
+) -> None:
+    await make_delivery_provider(
+        db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0, **PLEX_CFG
+    )
+    h = await _pending(db_session, delivery_status="failed")
+    downloader(FakeDownloaderClient())
+
+    await worker.start_delivery_worker()
+    try:
+        assert await worker.retry_delivery(db_session, h.id)
+        for _ in range(100):
+            if refresh_calls["refresh"]:
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        await worker.stop_delivery_worker()
+
+    assert refresh_calls["refresh"] == [{tmp_path / "Example Show (2018)"}]

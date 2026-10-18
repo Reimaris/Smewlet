@@ -22,6 +22,7 @@ from app.services.delivery.engines import (
     LocalLinkEngine,
 )
 from app.services.delivery.planner import build_delivery_plan
+from app.services.delivery.refresh import refresh_media_servers, title_folder
 from app.services.downloaders.base import DownloaderError
 from app.services.downloaders.factory import get_downloader_client_for_type
 from app.services.provider_service import get_active_delivery_provider
@@ -38,6 +39,7 @@ PROGRESS_INTERVAL_SECONDS = 1.0
 
 _queue: asyncio.Queue[int] | None = None
 _task: asyncio.Task[None] | None = None
+_refresh_folders: set[Path] = set()
 
 
 def _get_queue() -> asyncio.Queue[int]:
@@ -156,7 +158,78 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
         history.delivery_error = redact_text(f"{type(exc).__name__}: {exc}")[:200]
     _reset_progress(history)
     await session.commit()
+    if history.delivery_status == DeliveryStatus.DELIVERED.value:
+        await _queue_refresh(session, history)
     await _notify(session, history)
+
+
+async def _collect_refresh_folders(
+    session: AsyncSession, history: DownloadHistory, cfg: DeliveryConfig
+) -> set[Path]:
+    """Title folders of every delivered file of ``history``."""
+    paths = (
+        await session.execute(
+            select(DeliveredFile.dest_path).where(
+                DeliveredFile.history_id == history.id,
+                DeliveredFile.status == "delivered",
+                DeliveredFile.dest_path.is_not(None),
+            )
+        )
+    ).scalars()
+    folders = (title_folder(p, cfg) for p in paths if p)
+    return {f for f in folders if f is not None}
+
+
+async def _queue_refresh(session: AsyncSession, history: DownloadHistory) -> None:
+    """Remember the delivered title folders for the end-of-burst refresh."""
+    try:
+        provider = await get_active_delivery_provider(session)
+        if provider is None:
+            return
+        cfg = DeliveryConfig.from_provider(provider)
+        if cfg.plex_configured or cfg.jellyfin_configured:
+            _refresh_folders.update(
+                await _collect_refresh_folders(session, history, cfg)
+            )
+    except Exception:
+        logger.exception("[DELIVERY] refresh bookkeeping failed for %s", history.id)
+
+
+async def _flush_refresh() -> None:
+    """Refresh the media servers once for the collected folders; never raises."""
+    folders = set(_refresh_folders)
+    _refresh_folders.clear()
+    if not folders:
+        return
+    try:
+        async with get_session_factory()() as session:
+            provider = await get_active_delivery_provider(session)
+            if provider is None:
+                return
+            cfg = DeliveryConfig.from_provider(provider)
+            if not (cfg.plex_configured or cfg.jellyfin_configured):
+                return
+            results = await refresh_media_servers(cfg, sorted(folders))
+            failed = [r for r in results if not r.ok]
+            for r in failed:
+                logger.warning(
+                    "[DELIVERY] %s refresh failed (%s): %s",
+                    r.server,
+                    r.mode,
+                    r.detail,
+                )
+            if failed:
+                from app.services.notifications import dispatch_alert_message
+
+                body = "Delivered, but " + "; ".join(
+                    f"{r.server.capitalize()} refresh failed: {r.detail}"
+                    for r in failed
+                )
+                await dispatch_alert_message(
+                    session, "notify_on_delivery_failed", "Library refresh failed", body
+                )
+    except Exception:
+        logger.exception("[DELIVERY] library refresh failed")
 
 
 async def _deliver(session: AsyncSession, history: DownloadHistory) -> None:
@@ -308,6 +381,8 @@ async def _worker_loop() -> None:
             logger.exception("[DELIVERY] worker error for history %s", history_id)
         finally:
             queue.task_done()
+        if queue.empty() and _refresh_folders:
+            await _flush_refresh()
 
 
 async def start_delivery_worker() -> None:
