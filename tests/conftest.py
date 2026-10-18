@@ -48,6 +48,7 @@ from app.db.models import (
 )
 from app.main import app
 from app.services.delivery import engines as delivery_engines
+from app.services.delivery import offline as delivery_offline
 from app.services.delivery import worker as delivery_worker
 from app.services.downloaders import torbox
 from app.services.downloaders.base import (
@@ -684,7 +685,13 @@ class FakeDownloaderClient:
 
 @pytest.fixture(autouse=True)
 def fresh_delivery_queue(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(delivery_worker, "_queue", None)
+    monkeypatch.setattr(delivery_worker, "_queued_ids", [])
+    monkeypatch.setattr(delivery_worker, "_processing", False)
+    monkeypatch.setattr(delivery_worker, "_wake", None)
+    monkeypatch.setattr(delivery_worker, "_idle", None)
+    monkeypatch.setattr(delivery_offline, "_offline", False)
+    monkeypatch.setattr(delivery_offline, "_watcher", None)
+    monkeypatch.setattr(delivery_offline, "_roots", [])
 
 
 @pytest.fixture

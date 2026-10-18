@@ -26,6 +26,14 @@ from app.services.delivery.engines import (
     request_abort,
 )
 from app.services.delivery.folder_pin import pin_delivery_folders
+from app.services.delivery.offline import (
+    StorageOffline,
+    is_offline,
+    mark_offline,
+    probe_root,
+    set_recovery_callback,
+    stop_watcher,
+)
 from app.services.delivery.planner import build_delivery_plan
 from app.services.delivery.refresh import refresh_media_servers, title_folder
 from app.services.downloaders.base import DownloaderError
@@ -35,27 +43,66 @@ from app.services.provider_service import get_active_delivery_provider
 logger = logging.getLogger(__name__)
 
 PAUSE_CODES = frozenset(
-    {"INSUFFICIENT_STORAGE", "PATH_NOT_CONFIGURED", "PATH_UNAVAILABLE"}
+    {
+        "INSUFFICIENT_STORAGE",
+        "PATH_NOT_CONFIGURED",
+        "PATH_UNAVAILABLE",
+        "STORAGE_OFFLINE",
+    }
 )
 NOT_DELIVERABLE_DETAILS = frozenset(
     {"deleted", "replaced", "canceled", "downloader_removed"}
 )
 PROGRESS_INTERVAL_SECONDS = 1.0
 
-_queue: asyncio.Queue[int] | None = None
+_queued_ids: list[int] = []
+_processing = False
+_wake: asyncio.Event | None = None
+_idle: asyncio.Event | None = None
 _task: asyncio.Task[None] | None = None
 _refresh_folders: set[Path] = set()
 
 
-def _get_queue() -> asyncio.Queue[int]:
-    global _queue
-    if _queue is None:
-        _queue = asyncio.Queue()
-    return _queue
+def _events() -> tuple[asyncio.Event, asyncio.Event]:
+    """Loop-bound events, created lazily (``_idle`` is set while nothing is queued)."""
+    global _wake, _idle
+    if _wake is None or _idle is None:
+        _wake, _idle = asyncio.Event(), asyncio.Event()
+        _idle.set()
+    return _wake, _idle
 
 
-async def enqueue_delivery(history_id: int) -> None:
-    await _get_queue().put(history_id)
+def queued_history_ids() -> list[int]:
+    """FIFO ids waiting for delivery (excludes the row being processed)."""
+    return list(_queued_ids)
+
+
+async def enqueue_delivery(history_id: int, *, front: bool = False) -> None:
+    wake, idle = _events()
+    if history_id not in _queued_ids:
+        if front:
+            _queued_ids.insert(0, history_id)
+        else:
+            _queued_ids.append(history_id)
+    idle.clear()
+    wake.set()
+
+
+def _dequeue(history_id: int) -> None:
+    if history_id in _queued_ids:
+        _queued_ids.remove(history_id)
+    _settle_idle()
+
+
+def _settle_idle() -> None:
+    _, idle = _events()
+    if not _queued_ids and not _processing:
+        idle.set()
+
+
+async def wait_idle() -> None:
+    """Return once the queue is empty and no delivery is running."""
+    await _events()[1].wait()
 
 
 def _roots(cfg: DeliveryConfig) -> list[Path]:
@@ -155,6 +202,15 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
         await _deliver(session, history)
     except asyncio.CancelledError:
         raise  # stays 'delivering'; startup recovery resets it
+    except StorageOffline as exc:
+        logger.warning("[DELIVERY] history %s paused: storage offline", history_id)
+        await session.rollback()
+        history.delivery_status = DeliveryStatus.PAUSED.value
+        history.delivery_error = "STORAGE_OFFLINE"
+        _reset_progress(history)
+        await session.commit()
+        await mark_offline(exc.root)
+        return
     except DeliveryAborted:
         logger.info("[DELIVERY] history %s aborted", history_id)
         await session.rollback()
@@ -386,10 +442,47 @@ async def _notify(session: AsyncSession, history: DownloadHistory) -> None:
         logger.exception("[DELIVERY] notification failed for history %s", history.id)
 
 
+async def _on_storage_recovered() -> None:
+    """Watcher callback: paused ``STORAGE_OFFLINE`` rows go back to the queue front."""
+    async with get_session_factory()() as session:
+        ids = await _resume_offline_rows(session)
+    for history_id in reversed(ids):
+        await enqueue_delivery(history_id, front=True)
+    _events()[0].set()
+
+
+async def _resume_offline_rows(session: AsyncSession) -> list[int]:
+    rows = (
+        (
+            await session.execute(
+                select(DownloadHistory)
+                .where(
+                    DownloadHistory.delivery_status == DeliveryStatus.PAUSED.value,
+                    DownloadHistory.delivery_error == "STORAGE_OFFLINE",
+                )
+                .order_by(DownloadHistory.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for h in rows:
+        h.delivery_status = DeliveryStatus.PENDING.value
+        h.delivery_error = None
+    await session.commit()
+    return [h.id for h in rows]
+
+
 async def _worker_loop() -> None:
-    queue = _get_queue()
+    global _processing
+    wake, _ = _events()
     while True:
-        history_id = await queue.get()
+        if is_offline() or not _queued_ids:
+            wake.clear()
+            await wake.wait()
+            continue
+        history_id = _queued_ids.pop(0)
+        _processing = True
         try:
             async with get_session_factory()() as session:
                 await process_delivery(session, history_id)
@@ -398,26 +491,32 @@ async def _worker_loop() -> None:
         except Exception:
             logger.exception("[DELIVERY] worker error for history %s", history_id)
         finally:
-            queue.task_done()
-        if queue.empty() and _refresh_folders:
+            _processing = False
+            _settle_idle()
+        if not _queued_ids and _refresh_folders:
             await _flush_refresh()
 
 
 async def start_delivery_worker() -> None:
     """Start the single delivery task (``delivery_max_parallel`` is fixed at 1)."""
     global _task
+    set_recovery_callback(_on_storage_recovered)
     if _task is None or _task.done():
         _task = asyncio.create_task(_worker_loop())
 
 
 async def stop_delivery_worker() -> None:
-    global _task, _queue
+    global _task, _wake, _idle, _processing
     if _task is not None:
         _task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _task
     _task = None
-    _queue = None
+    await stop_watcher()
+    set_recovery_callback(None)
+    _queued_ids.clear()
+    _processing = False
+    _wake = _idle = None
 
 
 async def recover_interrupted_deliveries(session: AsyncSession) -> int:
@@ -455,9 +554,31 @@ async def recover_interrupted_deliveries(session: AsyncSession) -> int:
     )
     for h in rows:
         h.delivery_status = DeliveryStatus.PENDING.value
+    held = (
+        (
+            await session.execute(
+                select(DownloadHistory.id).where(
+                    DownloadHistory.delivery_status == DeliveryStatus.PAUSED.value,
+                    DownloadHistory.delivery_error == "STORAGE_OFFLINE",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     await session.commit()
     for h in rows:
         await enqueue_delivery(h.id)
+    # Rows held by an offline storage: probe once; reachable -> back in the queue.
+    if held:
+        for root in roots:
+            if not await probe_root(root):
+                await mark_offline(root)
+                return len(rows)
+        ids = await _resume_offline_rows(session)
+        for history_id in ids:
+            await enqueue_delivery(history_id)
+        return len(rows) + len(ids)
     return len(rows)
 
 
@@ -491,6 +612,7 @@ async def abort_delivery(session: AsyncSession, history_id: int) -> bool:
         history.delivery_error = None
         history.deliver_enabled = False
         await session.commit()
+        _dequeue(history_id)
     else:
         request_abort(history_id)
     return True

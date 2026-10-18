@@ -147,7 +147,7 @@ async def test_retry_delivery(start, allowed, db_session) -> None:
     assert h.delivery_status == ("pending" if allowed else start)
     if allowed:
         assert h.delivery_error is None
-        assert worker._get_queue().get_nowait() == h.id
+        assert worker.queued_history_ids() == [h.id]
 
 
 @pytest.mark.parametrize(
@@ -252,10 +252,7 @@ async def test_recovery_resets_delivering_and_deletes_part_files(
     assert not orphan.exists()
     assert finished.exists()
     assert outside.exists()  # outside configured roots: never touched
-    queue = worker._get_queue()
-    assert sorted([queue.get_nowait(), queue.get_nowait()]) == sorted(
-        [h.id, waiting.id]
-    )
+    assert sorted(worker.queued_history_ids()) == sorted([h.id, waiting.id])
 
 
 async def test_worker_loop_processes_enqueued_rows(
@@ -270,7 +267,7 @@ async def test_worker_loop_processes_enqueued_rows(
     await worker.start_delivery_worker()
     try:
         await worker.enqueue_delivery(h.id)
-        await worker._get_queue().join()
+        await worker.wait_idle()
     finally:
         await worker.stop_delivery_worker()
 
@@ -338,10 +335,7 @@ async def test_poller_completion_enqueues_only_when_enabled_and_active(
 
     assert history.status_detail == "completed"
     assert history.delivery_status == ("pending" if queued else "none")
-    queue = worker._get_queue()
-    assert queue.qsize() == (1 if queued else 0)
-    if queued:
-        assert queue.get_nowait() == history.id
+    assert worker.queued_history_ids() == ([history.id] if queued else [])
 
 
 @pytest.mark.parametrize(
@@ -452,7 +446,7 @@ async def test_adhoc_completion_enqueues_only_when_enabled_and_active(
     assert history.completed_at is not None
     assert history.progress_pct == 100.0
     assert history.delivery_status == ("pending" if queued else "none")
-    assert worker._get_queue().qsize() == (1 if queued else 0)
+    assert len(worker.queued_history_ids()) == (1 if queued else 0)
 
 
 async def test_adhoc_progress_updates_while_downloading(db_session) -> None:
@@ -461,7 +455,7 @@ async def test_adhoc_progress_updates_while_downloading(db_session) -> None:
     assert history.status_detail == "downloading"
     assert history.progress_pct == pytest.approx(40.0)
     assert history.delivery_status == "none"
-    assert worker._get_queue().qsize() == 0
+    assert worker.queued_history_ids() == []
 
 
 async def test_adhoc_fake_payload_fails_without_delivery(db_session) -> None:
@@ -470,14 +464,14 @@ async def test_adhoc_fake_payload_fails_without_delivery(db_session) -> None:
     assert history.status_detail.startswith("failed: Layer 3 Fake Detection")
     assert history.failed_at is not None
     assert history.delivery_status == "none"
-    assert worker._get_queue().qsize() == 0
+    assert worker.queued_history_ids() == []
 
 
 async def test_adhoc_terminal_failure_state(db_session) -> None:
     history = await _adhoc_tick(db_session, _adhoc_snapshot("failed"))
 
     assert history.status_detail.startswith("failed:")
-    assert worker._get_queue().qsize() == 0
+    assert worker.queued_history_ids() == []
 
 
 async def test_active_adhoc_rows_keep_poller_awake(db_session) -> None:
@@ -628,3 +622,163 @@ async def test_worker_loop_refreshes_after_retry_success(
         await worker.stop_delivery_worker()
 
     assert refresh_calls["refresh"] == [{tmp_path / "Example Show (2018)"}]
+
+
+# ---------------------------------------------------------------------------
+# Storage offline hold and resume (m81-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def offline_world(monkeypatch):
+    """Fake ``_deliver``: ids in ``fail_ids`` raise StorageOffline, the rest deliver."""
+    from app.services.delivery import offline
+
+    world: dict[str, Any] = {"fail_ids": set(), "done": [], "alerts": [], "marked": []}
+
+    async def fake_deliver(session, history) -> None:
+        if history.id in world["fail_ids"]:
+            raise offline.StorageOffline(Path("/mnt/library"))
+        history.delivery_status = "delivered"
+        world["done"].append(history.id)
+
+    async def mark(root) -> None:  # no watcher: tests drive recovery by hand
+        offline._offline = True
+        world["marked"].append(root)
+
+    async def alert(*args, **kwargs) -> None:
+        world["alerts"].append(args)
+
+    monkeypatch.setattr(worker, "_deliver", fake_deliver)
+    monkeypatch.setattr(worker, "mark_offline", mark)
+    monkeypatch.setattr("app.services.notifications.dispatch_alert_message", alert)
+    return world
+
+
+async def _wait_for(cond) -> None:
+    for _ in range(100):
+        if cond():
+            return
+        await asyncio.sleep(0.02)
+
+
+async def test_offline_pause_holds_queue_then_recovery_resumes_head_first(
+    db_session, offline_world
+) -> None:
+    from app.services.delivery import offline
+
+    head = await _pending(db_session, nzb_guid="g-head")
+    nxt = await _pending(db_session, nzb_guid="g-next")
+    head_id, nxt_id = head.id, nxt.id
+    offline_world["fail_ids"].add(head_id)
+
+    await worker.start_delivery_worker()
+    try:
+        await worker.enqueue_delivery(head_id)
+        await _wait_for(lambda: offline.is_offline())
+        await worker.enqueue_delivery(nxt_id)  # joins behind while offline
+        await asyncio.sleep(0.1)
+
+        db_session.expire_all()
+        await db_session.refresh(head)
+        assert (head.delivery_status, head.delivery_error) == (
+            "paused",
+            "STORAGE_OFFLINE",
+        )
+        assert head.progress_pct == 0.0
+        assert offline_world["alerts"] == []
+        assert offline_world["done"] == []
+        assert worker.queued_history_ids() == [nxt_id]
+
+        offline_world["fail_ids"].clear()
+        offline._offline = False
+        await worker._on_storage_recovered()
+        await worker.wait_idle()
+    finally:
+        await worker.stop_delivery_worker()
+
+    assert offline_world["done"] == [head_id, nxt_id]
+    db_session.expire_all()
+    await db_session.refresh(head)
+    assert head.delivery_status == "delivered"
+
+
+async def test_insufficient_storage_pause_does_not_hold_queue(
+    db_session, offline_world, monkeypatch
+) -> None:
+    first = await _pending(db_session, nzb_guid="g-1")
+    second = await _pending(db_session, nzb_guid="g-2")
+    real = worker._deliver
+
+    async def deliver(session, history) -> None:
+        if history.id == first.id:
+            history.delivery_status = "paused"
+            history.delivery_error = "INSUFFICIENT_STORAGE"
+            return
+        await real(session, history)
+
+    monkeypatch.setattr(worker, "_deliver", deliver)
+    await worker.start_delivery_worker()
+    try:
+        await worker.enqueue_delivery(first.id)
+        await worker.enqueue_delivery(second.id)
+        await worker.wait_idle()
+    finally:
+        await worker.stop_delivery_worker()
+
+    assert offline_world["done"] == [second.id]
+
+
+async def test_retry_goes_to_end_of_queue_and_is_held_while_offline(
+    db_session,
+) -> None:
+    from app.services.delivery import offline
+
+    queued = await _pending(db_session, nzb_guid="g-q")
+    held = await _pending(
+        db_session,
+        nzb_guid="g-held",
+        delivery_status="paused",
+        delivery_error="STORAGE_OFFLINE",
+    )
+    offline._offline = True
+    await worker.enqueue_delivery(queued.id)
+
+    assert await worker.retry_delivery(db_session, held.id)
+
+    assert worker.queued_history_ids() == [queued.id, held.id]
+
+
+async def test_startup_recovery_probes_offline_rows(
+    db_session, tmp_path, monkeypatch
+) -> None:
+    from app.services.delivery import offline
+
+    await make_delivery_provider(db_session, shows_path=str(tmp_path))
+    held = await _pending(
+        db_session, delivery_status="paused", delivery_error="STORAGE_OFFLINE"
+    )
+    marked: list[Path] = []
+
+    async def mark(root) -> None:
+        marked.append(root)
+
+    monkeypatch.setattr(worker, "mark_offline", mark)
+
+    async def down(_root) -> bool:
+        return False
+
+    monkeypatch.setattr(worker, "probe_root", down)
+    assert await worker.recover_interrupted_deliveries(db_session) == 0
+    assert marked == [tmp_path.resolve()]
+    assert worker.queued_history_ids() == []
+
+    async def up(_root) -> bool:
+        return True
+
+    monkeypatch.setattr(worker, "probe_root", up)
+    assert await worker.recover_interrupted_deliveries(db_session) == 1
+    await db_session.refresh(held)
+    assert held.delivery_status == "pending"
+    assert worker.queued_history_ids() == [held.id]
+    assert not offline.is_offline()
