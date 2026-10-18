@@ -40,6 +40,7 @@ It keeps your **Movies**, **TV Series** and **Anime** in sync with your watchlis
 - **Ad-Hoc Multi-Tier Search:** Search any title, IMDb ID, or TMDB/AniList ID and grab releases without adding anything to a watchlist.
 - **Release Scoring & Presets:** Scoring by codec, source, HDR and bitrate density, plus a primary/fallback language hierarchy, all tunable through reusable search presets.
 - **Service Outage Resilience:** When an indexer or downloader returns a server error, times out or serves an HTML error page, affected pushes pause automatically and retry after 10, 20, then 30 minutes (up to 5 attempts) before failing. A red dashboard banner shows the outage with a Resume Queue button, manual searches offer Retry Search, and optional outage alerts can be enabled in Settings.
+- **Library Delivery (optional):** Finished TorBox, Premiumize and SABnzbd downloads can be filed into your Movies, Shows and Anime folders with your own naming templates, then Plex or Jellyfin is refreshed. A queue pauses and resumes by itself when the NAS goes offline. See [Delivery](#delivery).
 - **Global Dry-Run Sandbox:** Simulate entire push pipelines with zero remote mutations.
 
 ---
@@ -187,19 +188,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## Delivery
 
-Smewlet can optionally move finished downloads into your media library. It is off until you add the **Local directory** provider under *Settings → Providers → Add Provider* (it is created inactive; switch it on once the paths are set). Smewlet still never downloads Usenet content itself: delivery is a separate step after your downloader finishes. See [DELIVERY_SETUP.md](DELIVERY_SETUP.md) for mounts, permissions, path maps and media server setup.
+Smewlet can optionally move finished downloads into your media library. It is off until you add the **Local directory** provider under *Settings → Providers → Add Provider* (it is created inactive; switch it on once the paths are set). Smewlet still never downloads Usenet content itself: delivery is a separate step after your downloader finishes.
 
-- **Four paths:** movies, shows, anime and anime movies. Leave a path empty to skip that media type; a push for an unconfigured type is paused with `PATH_NOT_CONFIGURED`. Use *Test* in the provider dialog to check each path exists and is writable.
-- **Templates:** each media kind has a naming template (placeholders: `title`, `year`, `entry_title`, `season`, `episode`, `episode_title`, `resolution`, `source`, `ext`). Unknown placeholders are rejected on save. Existing files are never overwritten.
-- **Anime** are filed per entry (one folder per AniList entry), so sequels and OVAs get their own folders.
-- **Cloud downloaders** (TorBox, Premiumize): files are streamed from the provider into the library, optionally deleting the cloud copy afterwards.
-- **SABnzbd:** files are hardlinked (falling back to move). Hardlinks need the SABnzbd download folder and the library on the **same filesystem**. If SABnzbd reports paths that differ from what Smewlet sees, set the *SABnzbd path map* (remote prefix → local prefix).
-- **Per push:** the push modal and manual search drawer have a *Deliver to Library* toggle (pre-checked when the provider is active). Finished rows offer *Deliver to Library* and, after a failure or pause, *Retry Delivery*.
-- **Free space:** a configurable buffer pauses delivery before the library volume fills up.
-- **Queue and offline storage:** Active Pushes shows *Downloads* and *Deliveries* as separate sections, with queued deliveries numbered. If the library storage (for example a NAS) goes offline, deliveries pause, a banner appears and the queue resumes automatically once the storage is back.
-- **Media server refresh (optional):** pick **None**, **Plex** or **Jellyfin** in the provider dialog's media server dropdown and enter that server's URL and token/API key (only the selected server is refreshed), and Smewlet asks the server to rescan the new title folders once per delivery batch (falling back to a full library refresh if the targeted call fails). If the server sees your library under a different path (another container mount), set the *media server path map* (server prefix → Smewlet prefix). Refreshing is best-effort: a failure only logs a warning and sends one notification, and never changes the delivery result. Use *Test Connection* to check each server. Plex support is flagged **Experimental** (not yet verified against a live server).
+- **Four paths and naming templates** for movies, shows, anime and anime movies; show episodes carry their TMDB episode title, anime are filed per entry.
+- **Cloud downloaders** (TorBox, Premiumize) stream files into the library; **SABnzbd** files are hardlinked (same filesystem required).
+- **Per push:** a *Deliver to Library* toggle, plus *Deliver to Library*, *Retry Delivery* and *Abort* on Active Pushes and History.
+- **Offline storage:** if the library storage (for example a NAS) goes offline, deliveries pause, a dashboard banner appears and the queue resumes by itself.
+- **Media server refresh (optional):** Plex (**Experimental**) or Jellyfin rescans new title folders after each delivery batch.
 
-Mount your library folders into the container (see the commented example in `compose.yaml`). The container runs as UID 1000, so that user needs write access to the mounted folders.
+Mount your library folders into the container (see the commented example in `compose.yaml`). The container runs as UID 1000, so that user needs write access to the mounted folders. Everything else (paths and mounts, path maps, templates, aborting, the offline queue, troubleshooting) is in **[DELIVERY_SETUP.md](DELIVERY_SETUP.md)**.
 
 ## Tech Stack
 

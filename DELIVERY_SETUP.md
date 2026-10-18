@@ -122,6 +122,7 @@ A folder that is reachable but unwritable (wrong permissions, read-only mount) i
 |---|---|
 | Permission denied | folder ownership/permissions for UID 1000 |
 | Read-only file system | remove `:ro` from the mount |
+| Unexpected new folder in the library | Smewlet creates missing library folders on delivery, so a typo in a path field creates a new folder instead of failing; check the four path fields |
 | Path not found | is the folder mounted into the container? |
 | Cannot hardlink across filesystems | SABnzbd downloads and library must share a filesystem (otherwise Smewlet moves the file) |
 | No space left on device | free space on the library volume; adjust the free-space buffer |
