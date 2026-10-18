@@ -7,6 +7,7 @@ they live in module constants so they are easy to adjust.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -39,6 +40,7 @@ class RefreshResult:
     ok: bool
     mode: str
     detail: str
+    latency_ms: int = 0
 
 
 def _is_under(path: str, root: str) -> bool:
@@ -85,6 +87,10 @@ def _client(timeout: float) -> httpx.AsyncClient:
     )
 
 
+def _elapsed_ms(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
+
+
 def _error_detail(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
@@ -112,13 +118,10 @@ def _plex_headers(cfg: DeliveryConfig) -> dict[str, str]:
     return {"X-Plex-Token": cfg.scan_plex_token or "", "Accept": "application/json"}
 
 
-async def _plex_section_for(
-    client: httpx.AsyncClient, base: str, headers: dict[str, str], folder: str
-) -> str | None:
-    resp = await _call(client, "GET", base + PLEX_SECTIONS_PATH, headers=headers)
+def _plex_section_for(sections: list[dict[str, Any]], folder: str) -> str | None:
     best_key: str | None = None
     best_len = -1
-    for section in resp.json().get("MediaContainer", {}).get("Directory", []):
+    for section in sections:
         for loc in section.get("Location", []):
             root = str(loc.get("path") or "").rstrip("/")
             if root and _is_under(folder, root) and len(root) > best_len:
@@ -132,8 +135,16 @@ async def _plex_refresh(cfg: DeliveryConfig, folders: list[str]) -> RefreshResul
     try:
         async with _client(REFRESH_TIMEOUT) as client:
             try:
+                sections: list[dict[str, Any]] = []
+                if folders:
+                    resp = await _call(
+                        client, "GET", base + PLEX_SECTIONS_PATH, headers=headers
+                    )
+                    sections = (
+                        resp.json().get("MediaContainer", {}).get("Directory", [])
+                    )
                 for folder in folders:
-                    key = await _plex_section_for(client, base, headers, folder)
+                    key = _plex_section_for(sections, folder)
                     if key is None:
                         raise LookupError(folder)
                     await _call(
@@ -154,6 +165,7 @@ async def _plex_refresh(cfg: DeliveryConfig, folders: list[str]) -> RefreshResul
 
 
 async def _plex_test(cfg: DeliveryConfig) -> RefreshResult:
+    start = time.perf_counter()
     try:
         async with _client(TEST_TIMEOUT) as client:
             await _call(
@@ -162,9 +174,11 @@ async def _plex_test(cfg: DeliveryConfig) -> RefreshResult:
                 (cfg.scan_plex_url or "") + PLEX_SECTIONS_PATH,
                 headers=_plex_headers(cfg),
             )
-        return RefreshResult("plex", True, "test", "")
+        return RefreshResult("plex", True, "test", "", _elapsed_ms(start))
     except Exception as exc:  # noqa: BLE001
-        return RefreshResult("plex", False, "test", _error_detail(exc))
+        return RefreshResult(
+            "plex", False, "test", _error_detail(exc), _elapsed_ms(start)
+        )
 
 
 # --- Jellyfin -------------------------------------------------------------
@@ -202,6 +216,7 @@ async def _jellyfin_refresh(cfg: DeliveryConfig, folders: list[str]) -> RefreshR
 
 
 async def _jellyfin_test(cfg: DeliveryConfig) -> RefreshResult:
+    start = time.perf_counter()
     try:
         async with _client(TEST_TIMEOUT) as client:
             await _call(
@@ -210,9 +225,11 @@ async def _jellyfin_test(cfg: DeliveryConfig) -> RefreshResult:
                 (cfg.scan_jellyfin_url or "") + JELLYFIN_INFO_PATH,
                 headers=_jellyfin_headers(cfg),
             )
-        return RefreshResult("jellyfin", True, "test", "")
+        return RefreshResult("jellyfin", True, "test", "", _elapsed_ms(start))
     except Exception as exc:  # noqa: BLE001
-        return RefreshResult("jellyfin", False, "test", _error_detail(exc))
+        return RefreshResult(
+            "jellyfin", False, "test", _error_detail(exc), _elapsed_ms(start)
+        )
 
 
 # --- Public API -----------------------------------------------------------

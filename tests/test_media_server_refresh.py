@@ -130,6 +130,27 @@ async def test_plex_targeted_success(requests) -> None:
     assert last.headers["User-Agent"]
 
 
+async def test_plex_fetches_sections_once_per_burst(requests) -> None:
+    def handler(r: httpx.Request) -> httpx.Response:
+        if r.url.path == "/library/sections":
+            return httpx.Response(200, json=SECTIONS)
+        return httpx.Response(200)
+
+    seen = requests(handler)
+    res = await refresh.refresh_media_servers(
+        _plex_cfg(),
+        [Path("/data/media/anime/A (2020)"), Path("/data/media/anime/B (2021)")],
+    )
+    assert res[0].ok and res[0].mode == "targeted"
+    assert [r.url.path for r in seen].count("/library/sections") == 1
+
+
+async def test_test_results_carry_own_latency(requests) -> None:
+    requests(lambda r: httpx.Response(200, json=SECTIONS))
+    res = await refresh.test_media_servers(_plex_cfg())
+    assert res[0].latency_ms >= 0
+
+
 async def test_plex_no_matching_section_falls_back_to_full(requests) -> None:
     def handler(r: httpx.Request) -> httpx.Response:
         if r.url.path == "/library/sections":

@@ -4428,7 +4428,6 @@ async def run_system_check(request: Request):
                     "latency_ms": int((time.perf_counter() - start) * 1000),
                 }
             )
-        start = time.perf_counter()
         for r in await delivery_refresh.test_media_servers(cfg):
             rows.append(
                 {
@@ -4436,7 +4435,7 @@ async def run_system_check(request: Request):
                     "category": "Delivery",
                     "ok": r.ok,
                     "msg": r.detail or "Connected",
-                    "latency_ms": int((time.perf_counter() - start) * 1000),
+                    "latency_ms": r.latency_ms,
                 }
             )
         return rows
