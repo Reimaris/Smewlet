@@ -31,6 +31,8 @@
              selectProvider(type, category, defaultName) {
                  this.providerType = type;
                  this.providerCategory = category;
+                 const activeInput = document.querySelector('#provider-form input[name=is_active]');
+                 if (activeInput && !this.isEdit) { activeInput.checked = category !== 'delivery'; }
                  const nameInput = document.getElementById('provider-name-input');
                  if (nameInput && (!nameInput.value || nameInput.value === this.autoName)) {
                      nameInput.value = defaultName;
