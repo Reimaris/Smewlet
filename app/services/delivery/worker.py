@@ -21,6 +21,7 @@ from app.services.delivery.engines import (
     DeliveryEngine,
     LocalLinkEngine,
 )
+from app.services.delivery.folder_pin import pin_delivery_folders
 from app.services.delivery.planner import build_delivery_plan
 from app.services.delivery.refresh import refresh_media_servers, title_folder
 from app.services.downloaders.base import DownloaderError
@@ -304,6 +305,9 @@ async def _deliver(session: AsyncSession, history: DownloadHistory) -> None:
         ).scalars()
     )
     _aggregate(history, rows)
+    if any(r.status == "delivered" for r in rows):
+        await pin_delivery_folders(session, rows, cfg)
+        await session.commit()
     if history.delivery_status == DeliveryStatus.DELIVERED.value:
         await _after_delivered(session, history, rows, cfg)
 

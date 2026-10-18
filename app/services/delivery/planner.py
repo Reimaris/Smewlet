@@ -149,9 +149,18 @@ async def build_delivery_plan(
             )
         elif dest.anilist_id is not None and len(dest.relative.parts) > 1:
             folder = dest.relative.parts[0]
-            suffix = await anime_folder_suffix(
-                session, dest.root, folder, dest.anilist_id
-            )
+            pinned_folder = ep_season.delivery_folder if ep_season else None
+            if pinned_folder:
+                dest = Destination(
+                    dest.root,
+                    Path(pinned_folder, *dest.relative.parts[1:]),
+                    dest.anilist_id,
+                )
+                suffix = ""
+            else:
+                suffix = await anime_folder_suffix(
+                    session, dest.root, folder, dest.anilist_id
+                )
             if suffix:
                 dest = Destination(
                     dest.root,

@@ -1092,6 +1092,10 @@ class Season(Base):
     )
     simkl_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     anilist_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Anime library folder pinned after the first delivery (first path component)
+    delivery_folder: Mapped[str | None] = mapped_column(
+        String(512), nullable=True, default=None
+    )
     mal_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     title_english: Mapped[str | None] = mapped_column(String(512), nullable=True)

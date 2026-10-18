@@ -1080,6 +1080,7 @@ async def init_db(database_url: str) -> None:
                 "ALTER TABLE seasons ADD COLUMN entry_type VARCHAR(20) NOT NULL DEFAULT 'season';",
                 "ALTER TABLE seasons ADD COLUMN watch_order INTEGER NOT NULL DEFAULT 1;",
                 "ALTER TABLE seasons ADD COLUMN type_number INTEGER NOT NULL DEFAULT 1;",
+                "ALTER TABLE seasons ADD COLUMN delivery_folder VARCHAR(512);",
                 # DownloadHistory live transfer, push mode, and denormalized snapshot columns (ADR-082)
                 "ALTER TABLE download_history ADD COLUMN push_mode VARCHAR(20) NOT NULL DEFAULT 'auto';",
                 "ALTER TABLE download_history ADD COLUMN progress_pct FLOAT NOT NULL DEFAULT 0.0;",

@@ -355,6 +355,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await start_delivery_worker()
     async with async_session_factory() as session:
         await recover_interrupted_deliveries(session)
+    async with async_session_factory() as session:
+        from app.services.delivery.folder_pin import backfill_delivery_folders
+
+        try:
+            await backfill_delivery_folders(session)
+        except Exception:
+            logger.exception("[DELIVERY] folder pin backfill failed")
 
     # Yield control to the FastAPI application
     yield
