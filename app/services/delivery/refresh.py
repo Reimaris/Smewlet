@@ -29,6 +29,7 @@ PLEX_SECTION_REFRESH_PATH = "/library/sections/{key}/refresh"
 PLEX_FULL_REFRESH_PATH = "/library/sections/all/refresh"
 JELLYFIN_INFO_PATH = "/System/Info"
 JELLYFIN_FOLDERS_PATH = "/Library/VirtualFolders"
+JELLYFIN_ITEMS_PATH = "/Items"
 JELLYFIN_UPDATED_PATH = "/Library/Media/Updated"
 JELLYFIN_REFRESH_PATH = "/Library/Refresh"
 
@@ -223,13 +224,48 @@ def _jellyfin_headers(cfg: DeliveryConfig) -> dict[str, str]:
     return {"Authorization": f'MediaBrowser Token="{cfg.scan_jellyfin_api_key}"'}
 
 
+async def _jellyfin_target_library_empty(
+    client: httpx.AsyncClient, base: str, headers: dict[str, str], folders: list[str]
+) -> bool:
+    """True when a library holding a delivered folder has no items yet.
+
+    Jellyfin answers a targeted update for an empty library with 204 but ignores
+    it, so the first delivery would stay invisible until a manual scan. Best
+    effort: any failure to find out counts as "not empty".
+    """
+    try:
+        resp = await _call(client, "GET", base + JELLYFIN_FOLDERS_PATH, headers=headers)
+        for library in resp.json():
+            roots = [str(loc).rstrip("/") for loc in library.get("Locations", [])]
+            if not any(_is_under(f, root) for f in folders for root in roots):
+                continue
+            items = await _call(
+                client,
+                "GET",
+                base + JELLYFIN_ITEMS_PATH,
+                headers=headers,
+                params={"ParentId": library["ItemId"], "Recursive": "true", "Limit": 0},
+            )
+            if items.json().get("TotalRecordCount") == 0:
+                logger.info(
+                    "jellyfin library %s is empty: using a full refresh",
+                    library.get("Name", library["ItemId"]),
+                )
+                return True
+    except (httpx.HTTPError, ValueError, AttributeError, KeyError, TypeError):
+        pass
+    return False
+
+
 async def _jellyfin_refresh(cfg: DeliveryConfig, folders: list[str]) -> RefreshResult:
     base = cfg.scan_jellyfin_url or ""
     headers = _jellyfin_headers(cfg)
     try:
         async with _client(REFRESH_TIMEOUT) as client:
             try:
-                if folders:
+                if folders and not await _jellyfin_target_library_empty(
+                    client, base, headers, folders
+                ):
                     await _call(
                         client,
                         "POST",

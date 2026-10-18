@@ -210,8 +210,9 @@ async def test_jellyfin_single_updates_request(requests) -> None:
         [Path("/data/media/anime/A"), Path("/data/media/movies/M (2020)")],
     )
     assert [(x.server, x.ok, x.mode) for x in res] == [("jellyfin", True, "targeted")]
-    assert len(seen) == 1
-    req = seen[0]
+    posts = [r for r in seen if r.method == "POST"]
+    assert len(posts) == 1
+    req = posts[0]
     assert (req.method, req.url.path) == ("POST", "/Library/Media/Updated")
     assert req.headers["Authorization"] == 'MediaBrowser Token="test-jf-key"'
     assert json.loads(req.content) == {
@@ -231,7 +232,68 @@ async def test_jellyfin_falls_back_to_full_refresh(requests) -> None:
     seen = requests(handler)
     res = await refresh.refresh_media_servers(_jf_cfg(), [Path("/data/media/anime/A")])
     assert res[0].ok and res[0].mode == "full"
-    assert [r.url.path for r in seen] == ["/Library/Media/Updated", "/Library/Refresh"]
+    posts = [r.url.path for r in seen if r.method == "POST"]
+    assert posts == ["/Library/Media/Updated", "/Library/Refresh"]
+
+
+def _jf_library_handler(
+    counts: dict[str, int], *, folders_status: int = 200
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Jellyfin with libraries ``/media/<name>`` whose item counts are ``counts``."""
+
+    def handler(r: httpx.Request) -> httpx.Response:
+        if r.url.path == "/Library/VirtualFolders":
+            body = [
+                {"ItemId": name, "Locations": [f"/media/{name}"]} for name in counts
+            ]
+            return httpx.Response(folders_status, json=body)
+        if r.url.path == "/Items":
+            total = counts[r.url.params["ParentId"]]
+            return httpx.Response(200, json={"TotalRecordCount": total})
+        return httpx.Response(204)
+
+    return handler
+
+
+def _posts(seen: list[httpx.Request]) -> list[str]:
+    return [r.url.path for r in seen if r.method == "POST"]
+
+
+async def test_jellyfin_empty_library_uses_full_refresh(requests) -> None:
+    seen = requests(_jf_library_handler({"movies": 0, "anime": 5}))
+    res = await refresh.refresh_media_servers(
+        _jf_cfg(), [Path("/data/media/movies/M (2020)")]
+    )
+    assert [(x.server, x.ok, x.mode) for x in res] == [("jellyfin", True, "full")]
+    assert _posts(seen) == ["/Library/Refresh"]  # targeted call would be ignored
+
+
+async def test_jellyfin_populated_library_stays_targeted(requests) -> None:
+    seen = requests(_jf_library_handler({"movies": 3, "anime": 0}))
+    res = await refresh.refresh_media_servers(
+        _jf_cfg(), [Path("/data/media/movies/M (2020)")]
+    )
+    assert res[0].mode == "targeted"  # the empty "anime" library is not involved
+    assert _posts(seen) == ["/Library/Media/Updated"]
+
+
+async def test_jellyfin_any_empty_target_library_forces_full_refresh(requests) -> None:
+    seen = requests(_jf_library_handler({"movies": 3, "anime": 0}))
+    res = await refresh.refresh_media_servers(
+        _jf_cfg(),
+        [Path("/data/media/movies/M (2020)"), Path("/data/media/anime/A")],
+    )
+    assert res[0].mode == "full"
+    assert _posts(seen) == ["/Library/Refresh"]
+
+
+async def test_jellyfin_empty_check_failure_stays_targeted(requests) -> None:
+    seen = requests(_jf_library_handler({"movies": 0}, folders_status=403))
+    res = await refresh.refresh_media_servers(
+        _jf_cfg(), [Path("/data/media/movies/M (2020)")]
+    )
+    assert res[0].mode == "targeted"
+    assert _posts(seen) == ["/Library/Media/Updated"]
 
 
 async def test_jellyfin_timeout_never_raises(requests) -> None:
