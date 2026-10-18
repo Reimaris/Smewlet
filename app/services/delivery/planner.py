@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.anime_titles import normalize_anime_title_language
+from app.core.anime_titles import is_anime_scope, normalize_anime_title_language
 from app.core.fake_detector import MIN_VIDEO_EPISODE_BYTES, MIN_VIDEO_MOVIE_BYTES
 from app.core.parser import ParsedRelease, parse_release_name
 from app.db.models import (
@@ -22,6 +22,7 @@ from app.db.models import (
     SystemSettings,
 )
 from app.services.delivery.config import DeliveryConfig
+from app.services.delivery.episode_titles import tmdb_episode_title
 from app.services.delivery.filtering import ClassifiedFile, classify_files
 from app.services.delivery.naming import (
     Destination,
@@ -125,8 +126,23 @@ async def build_delivery_plan(
         ext = posixpath.splitext(_basename(cf.file.name))[1]
         episode, ep_season = match if match is not None else (None, season)
         season_id = ep_season.id if ep_season is not None else history.season_id
+        episode_title: str | None = None
+        ep_number = episode.episode_number if episode is not None else parsed.episode
+        if (
+            item is not None
+            and not is_movie
+            and not is_anime_scope(item)
+            and (history.media_type_label or "") not in {"anime", "anime-movie"}
+            and item.tmdb_id is not None
+            and ep_season is not None
+            and ep_season.season_number > 0
+            and ep_number
+        ):
+            episode_title = await tmdb_episode_title(
+                session, item.tmdb_id, ep_season.season_number, ep_number
+            )
         dest = resolve_destination(
-            cfg, history, item, ep_season, episode, parsed, language, ext
+            cfg, history, item, ep_season, episode, parsed, language, ext, episode_title
         )
         if dest is None:
             return PlannedFile(

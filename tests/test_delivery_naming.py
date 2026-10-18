@@ -241,3 +241,21 @@ async def test_anime_folder_suffix_on_collision(db_session: AsyncSession) -> Non
         await anime_folder_suffix(db_session, Path("/lib/elsewhere"), folder, 100002)
         == ""
     )
+
+
+@pytest.mark.parametrize(
+    ("title", "name"),
+    [
+        ("Chapter One", "Example Show - S01E04 - Chapter One.mkv"),
+        (None, "Example Show - S01E04.mkv"),
+    ],
+)
+def test_episode_title_in_show_file_name(title: str | None, name: str) -> None:
+    show = MediaItem(title="Example Show", media_type=MediaType.SHOW, year=2018)
+    season = Season(season_number=1, entry_type="season")
+    episode = Episode(season_id=1, episode_number=4)
+    dest = resolve_destination(
+        CFG, _history(), show, season, episode, PARSED, "romaji", "mkv", title
+    )
+    assert dest is not None
+    assert dest.relative.name == name

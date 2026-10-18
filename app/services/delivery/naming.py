@@ -114,6 +114,7 @@ def resolve_destination(
     parsed: ParsedRelease,
     title_language: str,
     ext: str,
+    episode_title: str | None = None,
 ) -> Destination | None:
     """Route a file to its root and template; ``None`` when the root is unconfigured."""
     label = history.media_type_label or ""
@@ -129,7 +130,7 @@ def resolve_destination(
         "source": history.source or parsed.source,
         "ext": ext,
         "episode": ep_number or 0,
-        "episode_title": getattr(episode, "title", None),
+        "episode_title": episode_title,
     }
     anilist_id: int | None = None
 
