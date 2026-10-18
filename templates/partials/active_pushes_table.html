@@ -76,7 +76,7 @@
                             </div>
 
                             <div class="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                                <span class="text-xs font-mono text-gray-300">{{ p.speed_and_eta }}</span>
+                                <span class="text-xs font-mono text-gray-300 break-words min-w-0">{{ p.speed_and_eta }}</span>
                                 <div>
                                     {% if p.is_dry_run %}
                                         <span class="bg-amber-900/80 text-amber-200 border border-amber-500 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider shadow-sm inline-flex items-center gap-1">
@@ -131,7 +131,7 @@
 
                 <!-- Desktop-Only Col 4: Speed & ETA -->
                 <td class="hidden md:table-cell md:px-6 md:py-4 whitespace-nowrap text-xs font-mono text-gray-300">
-                    {{ p.speed_and_eta }}
+                    <div class="max-w-[260px] truncate" title="{{ p.speed_and_eta }}">{{ p.speed_and_eta }}</div>
                 </td>
 
                 <!-- Desktop-Only Col 5: Status -->
