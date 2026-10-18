@@ -399,3 +399,42 @@ async def test_deliver_now_flow_and_denials(
     db_session.expire_all()
     await db_session.refresh(ok)
     assert (ok.delivery_status, ok.deliver_enabled) == ("pending", True)
+
+
+# --- Media server refresh fields (m79-05) -------------------------------------
+
+
+async def test_provider_modal_media_server_fields(async_client, db_session) -> None:
+    from app.core.experimental import is_experimental
+
+    provider = await make_delivery_provider(
+        db_session,
+        scan_plex_url="http://plex.example.com:32400",
+        scan_plex_token="test-plex-token",
+        scan_jellyfin_url="http://jf.example.com:8096",
+        scan_jellyfin_api_key="test-jf-key",
+        scan_path_map_remote="/media",
+    )
+    await db_session.commit()
+    html = (await async_client.get(f"/settings/provider/{provider.id}/edit")).text
+
+    for name in (
+        "scan_plex_url",
+        "scan_plex_token",
+        "scan_jellyfin_url",
+        "scan_jellyfin_api_key",
+        "scan_path_map_remote",
+        "scan_path_map_local",
+    ):
+        assert f'name="{name}"' in html
+    assert 'type="password" name="scan_plex_token"' in html
+    assert 'type="password" name="scan_jellyfin_api_key"' in html
+    assert "test-plex-token" not in html and "test-jf-key" not in html
+    assert html.count("•••••• (unchanged)") == 2
+    assert 'value="http://plex.example.com:32400"' in html
+
+    plex_block = html.split('name="scan_plex_url"')[0].rsplit("<label", 1)[1]
+    jellyfin_block = html.split('name="scan_jellyfin_url"')[0].rsplit("<label", 1)[1]
+    assert "Experimental" in plex_block
+    assert "Experimental" not in jellyfin_block
+    assert is_experimental("local_directory") is False

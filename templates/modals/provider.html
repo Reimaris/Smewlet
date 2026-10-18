@@ -639,6 +639,34 @@
                                 <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">SABnzbd path map: local prefix</label>
                                 <input type="text" name="sab_path_map_local" value="{{ dcfg.sab_path_map_local if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/mnt/downloads">
                             </div>
+                            <div class="md:col-span-2 border-t border-[#3f3f46] pt-4">
+                                <h4 class="text-sm font-semibold text-white">Media server refresh (optional)</h4>
+                                <p class="text-xs text-[#a1a1aa]">After a delivery batch, Smewlet asks your media server to rescan the new folders. Failures only log and notify; delivery is never affected.</p>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Plex URL <span class="ml-2">{{ experimental_pill('plex') }}</span></label>
+                                <input type="text" name="scan_plex_url" value="{{ dcfg.scan_plex_url or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="http://plex:32400">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Plex token</label>
+                                <input type="password" name="scan_plex_token" value="" autocomplete="off" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{{ '•••••• (unchanged)' if provider and provider.type == 'local_directory' and dcfg.scan_plex_token_set else '' }}">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Jellyfin URL</label>
+                                <input type="text" name="scan_jellyfin_url" value="{{ dcfg.scan_jellyfin_url or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="http://jellyfin:8096">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Jellyfin API key</label>
+                                <input type="password" name="scan_jellyfin_api_key" value="" autocomplete="off" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="{{ '•••••• (unchanged)' if provider and provider.type == 'local_directory' and dcfg.scan_jellyfin_api_key_set else '' }}">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Media server path map: server prefix</label>
+                                <input type="text" name="scan_path_map_remote" value="{{ dcfg.scan_path_map_remote or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/media">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="h-6 text-[#d1d5db] font-medium mb-1 flex items-center">Media server path map: Smewlet prefix</label>
+                                <input type="text" name="scan_path_map_local" value="{{ dcfg.scan_path_map_local or '' if provider and provider.type == 'local_directory' else '' }}" class="w-full h-11 bg-[#111115] border border-[#3f3f46] focus:border-[#d40060] rounded-lg px-3.5 text-white focus:outline-none transition-colors font-mono" placeholder="/data/media">
+                            </div>
                             <label class="inline-flex items-center gap-2 text-sm text-white cursor-pointer md:col-span-2">
                                 <span class="relative inline-flex shrink-0">
 <input type="checkbox" name="delete_cloud_after_delivery" value="true" {% if dcfg.delete_cloud_after_delivery %}checked{% endif %} class="sr-only peer">
@@ -667,6 +695,11 @@
                         <ul x-show="result && result.paths && result.paths.length" class="text-xs font-mono space-y-0.5">
                             <template x-for="p in (result && result.paths) || []" :key="p.field">
                                 <li :class="p.ok ? 'text-green-400' : 'text-red-400'" x-text="p.path + ' — ' + p.detail"></li>
+                            </template>
+                        </ul>
+                        <ul x-show="result && result.servers && result.servers.length" class="text-xs font-mono space-y-0.5">
+                            <template x-for="s in (result && result.servers) || []" :key="s.server">
+                                <li :class="s.ok ? 'text-green-400' : 'text-red-400'" x-text="s.server + ' — ' + (s.ok ? 'connected' : s.detail)"></li>
                             </template>
                         </ul>
                     </div>
