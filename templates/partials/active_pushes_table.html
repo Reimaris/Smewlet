@@ -33,7 +33,7 @@
                 <th class="px-6 py-3.5">Progress Bar (%)</th>
                 <th class="px-6 py-3.5">Speed &amp; ETA</th>
                 <th class="px-6 py-3.5">Status</th>
-                <th class="px-6 py-3.5 text-right whitespace-nowrap w-1">Actions</th>
+                <th class="px-6 py-3.5 text-left whitespace-nowrap w-1">Actions</th>
             </tr>
         </thead>
         <tbody class="block md:table-row-group divide-y divide-[#3f3f46] text-sm w-full">
@@ -106,10 +106,10 @@
                 </td>
 
                 <!-- Desktop-Only Col 2: Release Name & Quality/Language Pills -->
-                <td class="hidden md:table-cell md:px-6 md:py-4 md:max-w-[320px] break-words">
+                <td class="hidden md:table-cell md:px-6 md:py-4 md:w-[320px] md:min-w-[320px] md:max-w-[320px] align-top break-words">
                     <div class="text-xs font-mono text-gray-200 truncate" title="{{ p.release_name }}">{{ p.release_name }}</div>
                     {% set pills = p.feature_pills if p.feature_pills is defined else [] %}
-                    <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    <div class="flex flex-wrap items-center gap-1.5 mt-1.5 min-h-5">
                         {% for pill in pills %}
                         <span class="h-5 px-2 inline-flex items-center text-[10px] font-semibold rounded border whitespace-nowrap {{ pill.css }}">{{ pill.label }}</span>
                         {% endfor %}
@@ -137,7 +137,7 @@
                 <!-- Desktop-Only Col 5: Status -->
                 <td class="hidden md:table-cell md:px-6 md:py-4 whitespace-nowrap">
                     {% if p.is_dry_run %}
-                        <span class="bg-amber-900/80 text-amber-200 border border-amber-500 text-[11px] font-bold px-2.5 py-1 rounded uppercase tracking-wider shadow-sm flex items-center gap-1.5">
+                        <span class="bg-amber-900/80 text-amber-200 border border-amber-500 text-[11px] font-bold px-2.5 py-1 rounded uppercase tracking-wider shadow-sm inline-flex items-center gap-1.5">
                             <svg class="w-3.5 h-3.5 shrink-0 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
                             <span>DRY RUN (SIMULATED)</span>
                         </span>
@@ -163,8 +163,8 @@
                 </td>
 
                 <!-- Col 6: Actions (Anchored Bottom Action Bar on Mobile) -->
-                <td class="block md:table-cell pt-2.5 md:pt-0 border-t border-[#3f3f46]/40 md:border-t-0 md:px-6 md:py-4 text-right whitespace-nowrap md:w-1 w-full">
-                    <div class="flex flex-wrap md:flex-nowrap justify-end gap-2">
+                <td class="block md:table-cell pt-2.5 md:pt-0 border-t border-[#3f3f46]/40 md:border-t-0 md:px-6 md:py-4 text-right md:text-left whitespace-nowrap md:w-1 w-full">
+                    <div class="flex flex-wrap md:flex-nowrap justify-end md:justify-start gap-2">
                         {% if p.is_dry_run %}
                         <button hx-post="/api/pushes/{{ p.history_id }}/dismiss"
                                 hx-target="#active-pushes-container"

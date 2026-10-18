@@ -460,7 +460,7 @@ async def test_card5_live_polling_and_completed_row_ui(
         in partial_html
     )
     assert (
-        "hidden md:table-cell md:px-6 md:py-4 md:max-w-[320px] break-words"
+        "hidden md:table-cell md:px-6 md:py-4 md:w-[320px] md:min-w-[320px] md:max-w-[320px] align-top break-words"
         in partial_html
     )
     assert (
@@ -473,7 +473,7 @@ async def test_card5_live_polling_and_completed_row_ui(
     )
     assert "hidden md:table-cell md:px-6 md:py-4 whitespace-nowrap" in partial_html
     assert (
-        "pt-2.5 md:pt-0 border-t border-[#3f3f46]/40 md:border-t-0 md:px-6 md:py-4 text-right whitespace-nowrap md:w-1 w-full"
+        "pt-2.5 md:pt-0 border-t border-[#3f3f46]/40 md:border-t-0 md:px-6 md:py-4 text-right md:text-left whitespace-nowrap md:w-1 w-full"
         in partial_html
     )
 
