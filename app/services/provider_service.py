@@ -201,16 +201,20 @@ async def get_active_delivery_provider(db: AsyncSession) -> Provider | None:
 
 
 async def create_delivery_provider(
-    db: AsyncSession, *, name: str = "Local directory", config_json: str = "{}"
+    db: AsyncSession,
+    *,
+    name: str = "Local directory",
+    config_json: str = "{}",
+    is_active: bool = False,
 ) -> Provider:
-    """Create the delivery provider (inactive); raises if one already exists."""
+    """Create the delivery provider (inactive by default); raises if one already exists."""
     if await get_delivery_provider(db) is not None:
         raise DeliveryProviderExistsError()
     provider = Provider(
         name=name,
         type="local_directory",
         category=ProviderCategory.DELIVERY.value,
-        is_active=False,
+        is_active=is_active,
         config_json=config_json,
     )
     db.add(provider)

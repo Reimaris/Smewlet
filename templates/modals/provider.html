@@ -653,13 +653,6 @@
                                 <span>Delete the cloud copy after successful delivery</span>
                             </label>
                             <p class="text-xs text-[#71717a] -mt-4 md:col-span-2" data-help="delete_cloud_after_delivery">Removes the file from your cloud downloader once it is safely in your library (e.g. to save cloud storage).</p>
-                            <label class="inline-flex items-center gap-2 text-sm text-white cursor-pointer md:col-span-2">
-                                <span class="relative inline-flex shrink-0">
-<input type="checkbox" name="is_active" value="true" {% if provider and provider.is_active %}checked{% endif %} class="sr-only peer">
-<div class="w-9 h-5 bg-[#3f3f46] peer-focus:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[#d40060] rounded-full peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#d40060]"></div>
-</span>
-                                <span>Active{% if not provider %} (enable after saving){% endif %}</span>
-                            </label>
                         </div>
                     </fieldset>
 

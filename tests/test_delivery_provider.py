@@ -225,6 +225,14 @@ async def test_second_delivery_provider_rejected(db_session: AsyncSession) -> No
         await provider_service.create_delivery_provider(db_session)
 
 
+async def test_create_delivery_provider_honours_switch_off(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    resp = await _save_delivery(async_client)
+    assert resp.status_code == 200
+    assert (await _delivery_row(db_session)).is_active is False
+
+
 async def test_inactive_delivery_provider_lookup(db_session: AsyncSession) -> None:
     assert await provider_service.get_delivery_provider(db_session) is None
     provider = await provider_service.create_delivery_provider(db_session)
@@ -249,13 +257,13 @@ async def _delivery_row(session: AsyncSession) -> Provider:
     return provider
 
 
-async def test_create_delivery_provider_inactive_and_persists_config(
+async def test_create_delivery_provider_persists_config(
     async_client, db_session: AsyncSession, tmp_path: Path
 ) -> None:  # type: ignore[no-untyped-def]
     movies = tmp_path / "movies"
     resp = await _save_delivery(
         async_client,
-        is_active="true",  # creation forces inactive
+        is_active="true",
         movies_path=str(movies),
         min_free_buffer_gb="2",
         delete_cloud_after_delivery="true",
@@ -264,7 +272,7 @@ async def test_create_delivery_provider_inactive_and_persists_config(
     )
     assert resp.status_code == 200
     provider = await _delivery_row(db_session)
-    assert provider.is_active is False
+    assert provider.is_active is True
     assert provider.category == "delivery"
     cfg = DeliveryConfig.from_provider(provider)
     assert cfg.movies_path == str(movies)

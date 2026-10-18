@@ -2150,7 +2150,10 @@ async def _save_delivery_provider(
         else:
             try:
                 await provider_service.create_delivery_provider(
-                    session, name=name, config_json=json.dumps(cfg)
+                    session,
+                    name=name,
+                    config_json=json.dumps(cfg),
+                    is_active=is_active,
                 )
             except provider_service.DeliveryProviderExistsError as exc:
                 return _form_error(str(exc), status_code=409)
@@ -2319,9 +2322,7 @@ async def save_provider(
     resolved_category = category or type_category
 
     if type_category == ProviderCategory.DELIVERY.value:
-        return await _save_delivery_provider(
-            request, provider_id, name, is_active and provider_id is not None
-        )
+        return await _save_delivery_provider(request, provider_id, name, is_active)
 
     indexer_categories: dict[str, str | None] = {}
     if is_indexer_type(provider_type):
