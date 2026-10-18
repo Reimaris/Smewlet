@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from app.core.transfer_poller import get_active_pushes, get_push_history_ledger
-from app.db.models import DeliveredFile
+from app.db.models import DeliveredFile, MediaItem, MediaStatus
 from app.services.delivery.hooks import deliver_override, parse_deliver
 from tests.conftest import (
     make_delivery_provider,
@@ -532,3 +532,70 @@ def test_delivery_setup_guide_exists_and_is_linked() -> None:
     root = Path(__file__).resolve().parent.parent
     assert (root / "DELIVERY_SETUP.md").is_file()
     assert "DELIVERY_SETUP.md" in (root / "README.md").read_text(encoding="utf-8")
+
+
+async def test_card5_renders_downloads_and_deliveries_sections(
+    async_client: Any, db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.delivery import worker
+
+    head = await _delivery_row(db_session, delivery_status="delivering")
+    second = await _delivery_row(db_session, delivery_status="pending")
+    third = await _delivery_row(db_session, delivery_status="pending")
+    monkeypatch.setattr(worker, "_queued_ids", [second.id, third.id])
+    # a finished download that is not delivered stays under Downloads
+    download = await _delivery_row(db_session, delivery_status="none")
+    movie = await db_session.get(MediaItem, download.media_item_id)
+    movie.status = MediaStatus.DOWNLOADED
+    await db_session.commit()
+
+    html = await _active_html(async_client)
+
+    assert "Deliveries (3)" in html
+    assert 'data-section-header="downloads"' in html
+    assert html.index("Downloads (") < html.index("Deliveries (3)")
+    positions = [html.index(f'data-history-id="{r.id}"') for r in (head, second, third)]
+    assert positions == sorted(positions)
+    assert "Delivery queued (1 of 2)" in html
+    assert "Delivery queued (2 of 2)" in html
+    assert html.index(f'data-history-id="{download.id}"') < html.index("Deliveries (3)")
+
+
+async def test_card5_empty_section_header_hidden(
+    async_client: Any, db_session: Any
+) -> None:
+    await _delivery_row(db_session, delivery_status="delivering")
+
+    html = await _active_html(async_client)
+
+    assert "Deliveries (1)" in html
+    assert 'data-section-header="downloads"' not in html
+
+
+async def test_card5_paused_storage_offline_pill(
+    async_client: Any, db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.delivery import offline
+
+    await _delivery_row(
+        db_session, delivery_status="paused", delivery_error="STORAGE_OFFLINE"
+    )
+    monkeypatch.setattr(offline, "_offline", True)
+    monkeypatch.setattr(
+        offline, "_next_check", datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
+    )
+
+    html = await _active_html(async_client)
+
+    assert "data-delivery-paused" in html
+    assert "Delivery paused: storage offline (next check " in html
+    assert "Retry Delivery" in html
+
+
+async def test_history_badge_storage_offline(db_session: Any) -> None:
+    from jinja2 import Environment, FileSystemLoader
+
+    env = Environment(loader=FileSystemLoader("templates"))
+    macro = env.get_template("partials/_delivery_ui.html").module.delivery_badge
+    html = macro({"delivery_status": "paused", "delivery_error": "STORAGE_OFFLINE"})
+    assert "PAUSED: STORAGE OFFLINE" in html

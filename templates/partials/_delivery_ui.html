@@ -10,7 +10,7 @@
 {% elif st == 'failed' %}
 <span data-delivery-badge="failed" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-red-500/15 text-red-400 border border-red-500/30" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>DELIVERY FAILED</span>
 {% elif st == 'paused' %}
-<span data-delivery-badge="paused" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-500/15 text-amber-400 border border-amber-500/30" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>DELIVERY PAUSED</span>
+<span data-delivery-badge="paused" class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded bg-amber-500/15 text-amber-400 border border-amber-500/30" {% if p.delivery_error %}title="{{ p.delivery_error }}"{% endif %}>{% if p.delivery_error == 'STORAGE_OFFLINE' %}PAUSED: STORAGE OFFLINE{% else %}DELIVERY PAUSED{% endif %}</span>
 {% endif %}
 {%- endmacro %}
 
