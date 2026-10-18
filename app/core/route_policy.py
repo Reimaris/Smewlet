@@ -52,6 +52,7 @@ CORE_PREFIXES: tuple[str, ...] = (
     "/api/torbox/add",
     "/api/pushes",
     "/api/outages",
+    "/api/delivery/offline-banner",
     "/api/history",
 )
 CORE_EXACT_PATHS: tuple[str, ...] = ("/",)

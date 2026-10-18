@@ -444,11 +444,13 @@ async def _notify(session: AsyncSession, history: DownloadHistory) -> None:
 
 async def _on_storage_recovered() -> None:
     """Watcher callback: paused ``STORAGE_OFFLINE`` rows go back to the queue front."""
-    async with get_session_factory()() as session:
-        ids = await _resume_offline_rows(session)
-    for history_id in reversed(ids):
-        await enqueue_delivery(history_id, front=True)
-    _events()[0].set()
+    try:
+        async with get_session_factory()() as session:
+            ids = await _resume_offline_rows(session)
+        for history_id in reversed(ids):
+            await enqueue_delivery(history_id, front=True)
+    finally:
+        _events()[0].set()  # never leave the loop waiting once the flag is clear
 
 
 async def _resume_offline_rows(session: AsyncSession) -> list[int]:
