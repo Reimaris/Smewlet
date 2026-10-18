@@ -509,3 +509,11 @@ async def test_card5_abort_button(
     html = await _active_html(async_client)
     assert ('data-delivery-abort="true"' in html) is shown
     assert (f"/api/history/{row.id}/abort-delivery" in html) is shown
+
+
+def test_delivery_setup_guide_exists_and_is_linked() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    assert (root / "DELIVERY_SETUP.md").is_file()
+    assert "DELIVERY_SETUP.md" in (root / "README.md").read_text(encoding="utf-8")
