@@ -253,6 +253,21 @@ async def test_card5_delivery_states(
         assert f"/api/history/{row.id}/retry-delivery" in html
 
 
+@pytest.mark.parametrize("status", ["failed", "paused"])
+async def test_card5_attention_error_stays_out_of_speed_column(
+    db_session: Any, status: str
+) -> None:
+    await _delivery_row(
+        db_session,
+        delivery_status=status,
+        delivery_error="Permission denied: /media/series (check folder permissions)",
+        failed_at=None,
+    )
+    (push,) = await get_active_pushes(db_session)
+    assert push["speed_and_eta"] == "—"
+    assert push["delivery_error"].startswith("Permission denied")
+
+
 async def test_card5_delivering_exposes_contract_keys(db_session: Any) -> None:
     row = await _delivery_row(
         db_session, delivery_status="delivering", progress_pct=55.0

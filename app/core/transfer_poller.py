@@ -2206,7 +2206,7 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
                 round(float(h.progress_pct or 0.0), 1) if delivering else 0.0
             )
             if h.delivery_status in _DELIVERY_ATTENTION:
-                row_speed_and_eta = h.delivery_error or "—"
+                row_speed_and_eta = "—"
             elif not delivering:
                 row_speed_and_eta = "Waiting for delivery slot"
             elif h.downloader_type == "sabnzbd":
