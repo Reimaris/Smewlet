@@ -22,6 +22,7 @@ from app.services.delivery.engines import (
     DeliveryEngine,
     LocalLinkEngine,
     clear_abort,
+    library_roots,
     request_abort,
 )
 from app.services.delivery.folder_pin import pin_delivery_folders
@@ -58,8 +59,7 @@ async def enqueue_delivery(history_id: int) -> None:
 
 
 def _roots(cfg: DeliveryConfig) -> list[Path]:
-    paths = (cfg.movies_path, cfg.shows_path, cfg.anime_path, cfg.anime_movies_path)
-    return [Path(p).resolve() for p in paths if p]
+    return library_roots(cfg)
 
 
 def _remove_empty_parents(path: Path, roots: list[Path]) -> None:

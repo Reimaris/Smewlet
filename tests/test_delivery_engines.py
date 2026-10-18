@@ -23,6 +23,7 @@ from app.services.delivery.engines import (
     map_sab_path,
 )
 from app.services.delivery.naming import Destination
+from app.services.delivery.offline import StorageOffline
 from app.services.delivery.planner import PlannedFile
 from app.services.downloaders import premiumize, torbox
 from app.services.downloaders.base import (
@@ -442,3 +443,57 @@ async def test_permission_error_is_readable(
     assert row.status == "failed"
     assert (row.error or "").startswith("Permission denied:")
     assert "OS error" not in (row.error or "")
+
+
+async def _offline_error(
+    db_session, use_client, monkeypatch, tmp_path, code: int, reachable: bool
+) -> tuple[DeliveryConfig, Path]:
+    history = await make_history(db_session, nzb_guid=f"g-{code}")
+    use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=3000)]))
+    _serve(monkeypatch)
+    root = tmp_path / "lib"
+    dest = root / "ep.mkv"
+
+    def fail(*_a: Any, **_k: Any) -> None:
+        raise OSError(code, os.strerror(code))
+
+    async def probe(_root: Path) -> bool:
+        return reachable
+
+    monkeypatch.setattr(os, "replace", fail)
+    monkeypatch.setattr(engines, "probe_root", probe)
+    cfg = replace(CFG, movies_path=str(root))
+    await CloudStreamEngine().deliver(db_session, history, [_plan("ep.mkv", dest)], cfg)
+    return cfg, dest
+
+
+async def test_offline_errno_with_failed_probe_raises_storage_offline(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    with pytest.raises(StorageOffline) as info:
+        await _offline_error(
+            db_session, use_client, monkeypatch, tmp_path, errno.ESTALE, False
+        )
+    assert info.value.root == (tmp_path / "lib").resolve()
+    assert (await db_session.execute(select(DeliveredFile))).scalars().all() == []
+    assert not (tmp_path / "lib" / "ep.mkv.part").exists()
+
+
+async def test_offline_errno_with_reachable_root_fails_readably(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    await _offline_error(
+        db_session, use_client, monkeypatch, tmp_path, errno.ENOENT, True
+    )
+    row = await _row(db_session)
+    assert row.status == "failed"
+    assert "OS error" not in (row.error or "")
+
+
+async def test_erofs_does_not_probe(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    await _offline_error(
+        db_session, use_client, monkeypatch, tmp_path, errno.EROFS, False
+    )
+    assert (await _row(db_session)).status == "failed"

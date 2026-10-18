@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import logging
 import os
@@ -25,6 +26,11 @@ from app.services.delivery.guard import (
     check_free_space,
     same_filesystem,
 )
+from app.services.delivery.offline import (
+    OFFLINE_ERRNOS,
+    StorageOffline,
+    probe_root,
+)
 from app.services.delivery.planner import PlannedFile
 from app.services.downloaders.base import DownloaderError, DownloadLink
 from app.services.downloaders.factory import get_downloader_client_for_type
@@ -32,6 +38,7 @@ from app.services.downloaders.factory import get_downloader_client_for_type
 logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 1024 * 1024
+PART_CLEANUP_TIMEOUT = 5.0
 EXPIRED_STATUSES = frozenset({401, 403, 404})
 
 _abort_requested: set[int] = set()
@@ -132,6 +139,30 @@ def _existing_target(dest: Path, expected_size: int) -> bool:
     raise _FileError("TARGET_EXISTS")
 
 
+def library_roots(cfg: DeliveryConfig) -> list[Path]:
+    """Configured library roots (resolved), in config order."""
+    paths = (cfg.movies_path, cfg.shows_path, cfg.anime_path, cfg.anime_movies_path)
+    return [Path(p).resolve() for p in paths if p]
+
+
+def library_root_of(planned: PlannedFile, cfg: DeliveryConfig) -> Path:
+    """The configured root containing ``planned.dest.full`` (its parent if none does)."""
+    dest = planned.dest.full.resolve()
+    for root in library_roots(cfg):
+        if dest.is_relative_to(root):
+            return root
+    return dest.parent
+
+
+async def _remove_part(dest: Path) -> None:
+    """Best-effort removal of ``<dest>.part`` that cannot hang on a dead mount."""
+    part = dest.with_name(dest.name + ".part")
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(
+            asyncio.to_thread(part.unlink, missing_ok=True), PART_CLEANUP_TIMEOUT
+        )
+
+
 class _BaseEngine:
     async def _run(
         self,
@@ -164,6 +195,11 @@ class _BaseEngine:
                     f"Network error: {type(exc).__name__}",
                 )
             except OSError as exc:
+                if exc.errno in OFFLINE_ERRNOS:
+                    root = library_root_of(planned, cfg)
+                    if not await probe_root(root):
+                        await _remove_part(planned.dest.full)
+                        raise StorageOffline(root) from exc
                 message = describe_os_error(exc, planned.dest.full)
                 logger.warning(
                     "[DELIVERY] history %s: %s (errno=%s)",
