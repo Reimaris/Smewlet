@@ -437,6 +437,25 @@ async def test_system_check_probes_configured_delivery_paths(
         assert "Not writable" in html
 
 
+async def test_system_check_groups_delivery_rows_in_one_box(
+    async_client, db_session: AsyncSession, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    for name in ("movies", "shows"):
+        (tmp_path / name).mkdir()
+    await make_delivery_provider(
+        db_session,
+        movies_path=str(tmp_path / "movies"),
+        shows_path=str(tmp_path / "shows"),
+    )
+    await db_session.commit()
+    html = await _check(async_client)
+    assert html.count("divide-y") == 1  # one group box
+    box = html[html.index("divide-y") :]
+    assert "Delivery: movies" in box and "Delivery: shows" in box
+    # rows of other services are not pulled into the box
+    assert "SQLite Database" not in box
+
+
 async def test_system_check_skips_inactive_or_absent_delivery(
     async_client, db_session: AsyncSession, tmp_path: Path
 ) -> None:  # type: ignore[no-untyped-def]

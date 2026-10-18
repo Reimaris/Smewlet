@@ -4423,6 +4423,7 @@ async def run_system_check(request: Request):
                 {
                     "name": f"Delivery: {field.removesuffix('_path').replace('_', ' ')}",
                     "category": "Delivery",
+                    "group": "Delivery",
                     "ok": ok,
                     "msg": f"{path} — {detail}",
                     "latency_ms": int((time.perf_counter() - start) * 1000),
@@ -4433,6 +4434,7 @@ async def run_system_check(request: Request):
                 {
                     "name": f"Delivery: {r.server.capitalize()} refresh",
                     "category": "Delivery",
+                    "group": "Delivery",
                     "ok": r.ok,
                     "msg": r.detail or "Connected",
                     "latency_ms": r.latency_ms,
@@ -4529,17 +4531,19 @@ async def run_system_check(request: Request):
         </div>
         """)
 
-    # Render service cards
-    html_parts.append('<div class="space-y-2.5">')
-    for item in results:
+    # Render service cards; consecutive probes sharing a "group" share one box
+    def render_row(item: dict[str, Any], boxed: bool) -> str:
         ok = item["ok"]
         icon = "✅" if ok else "❌"
         status_color = "text-emerald-400" if ok else "text-rose-400"
-        bg_color = (
-            "bg-[#141418] border-[#2d2d38]"
-            if ok
-            else "bg-rose-950/10 border-rose-900/30"
-        )
+        if boxed:
+            bg_color = "" if ok else "bg-rose-950/10"
+        else:
+            bg_color = (
+                "bg-[#141418] border-[#2d2d38] border rounded-lg"
+                if ok
+                else "bg-rose-950/10 border-rose-900/30 border rounded-lg"
+            )
         latency = item.get("latency_ms", 0)
 
         # Latency badge styling
@@ -4550,8 +4554,8 @@ async def run_system_check(request: Request):
         else:
             lat_color = "bg-rose-950/50 text-rose-300 border-rose-800/40"
 
-        html_parts.append(f"""
-        <div class="flex items-center justify-between p-3 {bg_color} border rounded-lg transition-colors">
+        return f"""
+        <div class="flex items-center justify-between p-3 {bg_color} transition-colors">
             <div class="flex items-center gap-3 min-w-0 pr-2">
                 <span class="text-base shrink-0">{icon}</span>
                 <div class="min-w-0">
@@ -4566,7 +4570,27 @@ async def run_system_check(request: Request):
                 <span class="text-[10px] font-mono px-2 py-0.5 rounded border {lat_color}">{latency}ms</span>
             </div>
         </div>
-        """)
+        """
+
+    html_parts.append('<div class="space-y-2.5">')
+    pos = 0
+    while pos < len(results):
+        group = results[pos].get("group")
+        end = pos + 1
+        while group and end < len(results) and results[end].get("group") == group:
+            end += 1
+        if not group:
+            html_parts.append(render_row(results[pos], boxed=False))
+        else:
+            rows = "".join(render_row(r, boxed=True) for r in results[pos:end])
+            html_parts.append(
+                '<div class="bg-[#141418] border border-[#2d2d38] rounded-lg '
+                'divide-y divide-[#2d2d38] overflow-hidden">'
+                '<div class="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider '
+                f'text-[#71717a] bg-[#18181f]">{html_escape.escape(group)}</div>'
+                f"{rows}</div>"
+            )
+        pos = end
     html_parts.append("</div>")
 
     # Summary bar
