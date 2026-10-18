@@ -50,6 +50,11 @@ SECRETS = [
         ),
         ('{"password":"p"}', "{}"),
         (
+            '{"scan_plex_token":"test-plex-token",'
+            '"scan_jellyfin_api_key":"test-jellyfin-key","scan_plex_url":"http://x"}',
+            '{"scan_plex_url":"http://x"}',
+        ),
+        (
             '{"access_token":"fake-access","client_id":"fake-cid","sync_movies":true}',
             '{"sync_movies":true}',
         ),

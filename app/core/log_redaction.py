@@ -29,6 +29,7 @@ FULL_MASK = "***"
 _SENSITIVE_KEYS = (
     r"apikey|api_key|access_token|token|password|secret|client_secret"
     r"|code_verifier|code_challenge|authToken|X-Plex-Token|refresh_token"
+    r"|scan_plex_token|scan_jellyfin_api_key"
 )
 
 _QUERY_PARAM_RE = re.compile(
@@ -129,6 +130,8 @@ def _register_row_secrets(_mapper: Any, _connection: Any, target: Any) -> None:
     if isinstance(cfg, dict):
         register_secret(str(cfg.get("refresh_token") or ""))
         register_secret(str(cfg.get("api_key") or ""))
+        register_secret(str(cfg.get("scan_plex_token") or ""))
+        register_secret(str(cfg.get("scan_jellyfin_api_key") or ""))
 
 
 _listeners_installed = False

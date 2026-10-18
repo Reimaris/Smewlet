@@ -26,6 +26,8 @@ SENSITIVE_CONFIG_KEYS: frozenset[str] = frozenset(
         "code_challenge",
         "authToken",
         "X-Plex-Token",
+        "scan_plex_token",
+        "scan_jellyfin_api_key",
     }
 )
 

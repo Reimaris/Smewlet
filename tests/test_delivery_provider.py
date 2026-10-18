@@ -19,7 +19,11 @@ from app.db.models import (
     SystemSettings,
 )
 from app.services import provider_service
-from app.services.delivery.config import DeliveryConfig, validate_templates
+from app.services.delivery.config import (
+    DeliveryConfig,
+    validate_scan_settings,
+    validate_templates,
+)
 from tests.conftest import make_delivery_provider, make_history, make_movie
 
 HISTORY_COLUMNS = (
@@ -144,6 +148,59 @@ def test_config_wrong_types_coerce_and_valid_values_kept() -> None:
     assert cfg.min_free_buffer_bytes == 5368709120
     assert cfg.delete_cloud_after_delivery is False
     assert cfg.anime_template == DeliveryConfig().anime_template
+
+
+def test_config_scan_fields_normalised() -> None:
+    cfg = _cfg(
+        '{"scan_plex_url": " http://plex.example.com:32400/ ",'
+        ' "scan_plex_token": "test-plex-token", "scan_jellyfin_url": "",'
+        ' "scan_jellyfin_api_key": 5}'
+    )
+    assert cfg.scan_plex_url == "http://plex.example.com:32400"
+    assert cfg.scan_plex_token == "test-plex-token"
+    assert cfg.scan_jellyfin_url is None
+    assert cfg.scan_jellyfin_api_key is None
+    assert cfg.plex_configured is True
+    assert cfg.jellyfin_configured is False
+
+
+def test_config_scan_configured_needs_both_fields() -> None:
+    assert _cfg('{"scan_plex_url": "http://plex.example.com"}').plex_configured is False
+    cfg = _cfg(
+        '{"scan_jellyfin_url": "http://jf.example.com", "scan_jellyfin_api_key": "k"}'
+    )
+    assert cfg.jellyfin_configured is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("{}", ""),
+        (
+            '{"scan_plex_url": "ftp://plex.example.com"}',
+            "scan_plex_url must be an http(s) URL.",
+        ),
+        (
+            '{"scan_jellyfin_url": "http://"}',
+            "scan_jellyfin_url must be an http(s) URL.",
+        ),
+        (
+            '{"scan_path_map_remote": "/data"}',
+            "Scan path map needs two absolute paths (or leave both empty).",
+        ),
+        (
+            '{"scan_path_map_remote": "data", "scan_path_map_local": "/mnt"}',
+            "Scan path map needs two absolute paths (or leave both empty).",
+        ),
+        (
+            '{"scan_plex_url": "https://plex.example.com",'
+            ' "scan_path_map_remote": "/data", "scan_path_map_local": "/mnt"}',
+            "",
+        ),
+    ],
+)
+def test_validate_scan_settings(raw: str, expected: str) -> None:
+    assert validate_scan_settings(_cfg(raw)) == expected
 
 
 def test_config_max_parallel_pinned_to_one() -> None:

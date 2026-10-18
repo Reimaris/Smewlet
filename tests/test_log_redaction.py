@@ -159,3 +159,32 @@ def test_downloader_apikey_in_urls_and_forms_is_redacted(text: str) -> None:
 
     assert "abc123" not in redact_text(text)
     assert "apikey=***" in redact_text(text)
+
+
+async def test_scan_secrets_registered_and_masked(db_session):
+    install_model_listeners()
+    db_session.add(
+        Provider(
+            name="Delivery",
+            type="local_directory",
+            category="delivery",
+            config_json=(
+                '{"scan_plex_token": "test-plex-token-value",'
+                ' "scan_jellyfin_api_key": "test-jellyfin-key-value"}'
+            ),
+        )
+    )
+    await db_session.commit()
+    out = redact_text("a test-plex-token-value b test-jellyfin-key-value")
+    assert "-value" not in out
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'config {"scan_plex_token": "zzzz-plex-secret"}',
+        "scan_jellyfin_api_key=zzzz-plex-secret",
+    ],
+)
+def test_scan_keys_masked_by_pattern(text):
+    assert "zzzz-plex-secret" not in redact_text(text)

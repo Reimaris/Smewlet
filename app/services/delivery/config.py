@@ -6,6 +6,7 @@ import json
 import string
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from app.db.models import Provider
@@ -30,6 +31,15 @@ _TEMPLATE_FIELDS = (
     "anime_template",
     "anime_movie_template",
 )
+
+
+_OPTIONAL_STR_FIELDS = (
+    "scan_plex_url",
+    "scan_plex_token",
+    "scan_jellyfin_url",
+    "scan_jellyfin_api_key",
+)
+_URL_FIELDS = ("scan_plex_url", "scan_jellyfin_url")
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,22 @@ class DeliveryConfig:
     delivery_max_parallel: int = 1
     sab_path_map_remote: str = ""
     sab_path_map_local: str = ""
+    scan_plex_url: str | None = None
+    scan_plex_token: str | None = None
+    scan_jellyfin_url: str | None = None
+    scan_jellyfin_api_key: str | None = None
+    scan_path_map_remote: str = ""
+    scan_path_map_local: str = ""
+
+    @property
+    def plex_configured(self) -> bool:
+        """True when both the Plex URL and token are set."""
+        return bool(self.scan_plex_url and self.scan_plex_token)
+
+    @property
+    def jellyfin_configured(self) -> bool:
+        """True when both the Jellyfin URL and API key are set."""
+        return bool(self.scan_jellyfin_url and self.scan_jellyfin_api_key)
 
     @classmethod
     def from_provider(cls, provider: Provider) -> DeliveryConfig:
@@ -74,6 +100,9 @@ class DeliveryConfig:
         for f in fields(cls):
             default = getattr(defaults, f.name)
             value = raw.get(f.name, default)
+            if f.name in _OPTIONAL_STR_FIELDS:
+                values[f.name] = _clean_optional_str(value, f.name in _URL_FIELDS)
+                continue
             # bool is an int subclass: only accept it for bool fields
             if type(value) is not type(default):
                 value = default
@@ -82,6 +111,31 @@ class DeliveryConfig:
             values["min_free_buffer_bytes"] = defaults.min_free_buffer_bytes
         values["delivery_max_parallel"] = 1  # pinned in m78
         return cls(**values)
+
+
+def _clean_optional_str(value: Any, is_url: bool) -> str | None:
+    """Keep a non-empty stripped string (URLs without trailing ``/``), else ``None``."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if is_url:
+        value = value.rstrip("/")
+    return value or None
+
+
+def validate_scan_settings(cfg: DeliveryConfig) -> str:
+    """Return an error message for invalid media-server scan settings, or ``""``."""
+    for name in _URL_FIELDS:
+        url = getattr(cfg, name)
+        if url is None:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return f"{name} must be an http(s) URL."
+    remote, local = cfg.scan_path_map_remote, cfg.scan_path_map_local
+    if (remote or local) and not (remote.startswith("/") and local.startswith("/")):
+        return "Scan path map needs two absolute paths (or leave both empty)."
+    return ""
 
 
 def validate_templates(cfg: DeliveryConfig) -> list[str]:
