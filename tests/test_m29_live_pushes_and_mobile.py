@@ -473,7 +473,7 @@ async def test_card5_live_polling_and_completed_row_ui(
     )
     assert "hidden md:table-cell md:px-6 md:py-4 whitespace-nowrap" in partial_html
     assert (
-        "pt-2.5 md:pt-0 border-t border-[#3f3f46]/40 md:border-t-0 md:px-6 md:py-4 text-right md:text-left whitespace-nowrap md:w-1 w-full"
+        "pt-2.5 md:pt-4 border-t border-[#3f3f46]/40 md:border-t-0 md:px-6 md:py-4 text-right md:text-left whitespace-nowrap md:w-1 w-full"
         in partial_html
     )
 
@@ -563,7 +563,7 @@ async def test_mobile_responsive_dashboard_navbar_and_push_modal(
     )
     assert "hidden md:table-cell md:px-4 md:py-3.5 md:w-px md:whitespace-nowrap" in html
     assert (
-        "border-t border-[#3f3f46]/40 mt-3 pt-2.5 md:mt-0 md:pt-0 md:border-t-0 md:px-4 md:py-3.5 text-right md:w-px md:whitespace-nowrap w-full"
+        "border-t border-[#3f3f46]/40 mt-3 pt-2.5 md:mt-0 md:pt-3.5 md:border-t-0 md:px-4 md:py-3.5 text-right md:w-px md:whitespace-nowrap w-full"
         in html
     )
 

@@ -436,7 +436,7 @@ async def test_three_tier_status_sections_and_five_column_layout_with_dual_anime
         assert (
             "hidden md:table-cell md:px-6 md:py-4 md:w-px md:whitespace-nowrap" in html
         )
-        assert "pt-2.5 md:pt-0 border-t border-[#3f3f46]/40 md:border-t-0" in html
+        assert "pt-2.5 md:pt-4 border-t border-[#3f3f46]/40 md:border-t-0" in html
 
 
 @pytest.mark.asyncio
@@ -515,7 +515,7 @@ async def test_single_deck_navigation_unified_six_column_history_and_fluid_colum
             in html
         )
         assert (
-            "border-t border-[#3f3f46]/40 mt-3 pt-2.5 md:mt-0 md:pt-0 md:border-t-0 md:px-4 md:py-3.5"
+            "border-t border-[#3f3f46]/40 mt-3 pt-2.5 md:mt-0 md:pt-3.5 md:border-t-0 md:px-4 md:py-3.5"
             in html
         )
 
