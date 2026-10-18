@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.db.models import (
     SystemSettings,
 )
 from app.services import provider_service
+from app.services.delivery import refresh
 from app.services.delivery.config import (
     DeliveryConfig,
     validate_scan_settings,
@@ -431,3 +433,186 @@ async def test_system_check_skips_inactive_or_absent_delivery(
     provider.is_active = False
     await db_session.commit()
     assert "Delivery:" not in await _check(async_client)
+
+
+# --- Media server settings, test & system check (m79-04) ----------------------
+
+PLEX_URL = "http://plex.example.com:32400"
+
+
+async def test_scan_settings_saved_and_blank_token_keeps_stored(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    provider = await make_delivery_provider(
+        db_session, scan_plex_url=PLEX_URL, scan_plex_token="test-plex-token"
+    )
+    await db_session.commit()
+    resp = await async_client.post(
+        f"/settings/provider/{provider.id}",
+        data={
+            "name": "Local directory",
+            "provider_type": "local_directory",
+            "scan_plex_url": PLEX_URL + "/",
+            "scan_plex_token": "",
+            "scan_jellyfin_url": "http://jf.example.com:8096",
+            "scan_jellyfin_api_key": "test-jf-key",
+            "scan_path_map_remote": "/media",
+            "scan_path_map_local": "/data/media",
+        },
+    )
+    assert resp.status_code == 200
+    cfg = DeliveryConfig.from_provider(await _delivery_row(db_session))
+    assert (cfg.scan_plex_url, cfg.scan_plex_token) == (PLEX_URL, "test-plex-token")
+    assert cfg.jellyfin_configured is True
+    assert (cfg.scan_path_map_remote, cfg.scan_path_map_local) == (
+        "/media",
+        "/data/media",
+    )
+
+
+async def test_blank_scan_url_clears_url_and_token(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    provider = await make_delivery_provider(
+        db_session, scan_plex_url=PLEX_URL, scan_plex_token="test-plex-token"
+    )
+    await db_session.commit()
+    resp = await async_client.post(
+        f"/settings/provider/{provider.id}",
+        data={
+            "name": "Local directory",
+            "provider_type": "local_directory",
+            "scan_plex_url": "",
+            "scan_plex_token": "",
+        },
+    )
+    assert resp.status_code == 200
+    cfg = DeliveryConfig.from_provider(await _delivery_row(db_session))
+    assert (cfg.scan_plex_url, cfg.scan_plex_token) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"scan_plex_url": "ftp://plex.example.com"},
+        {"scan_jellyfin_url": "not a url"},
+        {"scan_path_map_remote": "/media"},
+        {"scan_path_map_remote": "media", "scan_path_map_local": "/data"},
+    ],
+)
+async def test_invalid_scan_settings_return_422(
+    async_client, db_session: AsyncSession, data: dict[str, str]
+) -> None:  # type: ignore[no-untyped-def]
+    resp = await _save_delivery(async_client, **data)
+    assert resp.status_code == 422
+    assert await provider_service.get_delivery_provider(db_session) is None
+
+
+async def test_form_values_hide_tokens(db_session: AsyncSession) -> None:
+    from app.main import _delivery_form_values
+
+    provider = await make_delivery_provider(
+        db_session,
+        scan_plex_url=PLEX_URL,
+        scan_plex_token="test-plex-token",
+        scan_jellyfin_url="http://jf.example.com",
+    )
+    values = _delivery_form_values(provider)
+    assert "test-plex-token" not in repr(values)
+    assert "scan_plex_token" not in values
+    assert values["scan_plex_url"] == PLEX_URL
+    assert values["scan_plex_token_set"] is True
+    assert values["scan_jellyfin_api_key_set"] is False
+
+
+async def test_test_endpoint_includes_servers(
+    async_client, db_session: AsyncSession, tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    seen: list[refresh.DeliveryConfig] = []
+
+    async def fake(cfg):  # type: ignore[no-untyped-def]
+        seen.append(cfg)
+        return [
+            refresh.RefreshResult("plex", True, "test", ""),
+            refresh.RefreshResult("jellyfin", False, "test", "HTTP 401 Unauthorized"),
+        ]
+
+    monkeypatch.setattr(refresh, "test_media_servers", fake)
+    provider = await make_delivery_provider(
+        db_session, scan_plex_url=PLEX_URL, scan_plex_token="test-plex-token"
+    )
+    await db_session.commit()
+    resp = await async_client.post(
+        "/api/providers/test",
+        data={
+            "provider_type": "local_directory",
+            "provider_id": str(provider.id),
+            "movies_path": str(tmp_path),
+            "scan_plex_url": PLEX_URL,
+            "scan_plex_token": "",
+            "scan_jellyfin_url": "http://jf.example.com",
+            "scan_jellyfin_api_key": "test-jf-key",
+        },
+    )
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["paths"][0]["ok"] is True
+    assert body["servers"] == [
+        {"server": "plex", "ok": True, "detail": ""},
+        {"server": "jellyfin", "ok": False, "detail": "HTTP 401 Unauthorized"},
+    ]
+    assert seen[0].scan_plex_token == "test-plex-token"  # blank -> stored token
+    assert "test-plex-token" not in resp.text
+
+
+async def test_test_endpoint_servers_only_and_all_ok(async_client, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    async def fake(cfg):  # type: ignore[no-untyped-def]
+        return [refresh.RefreshResult("plex", True, "test", "")]
+
+    monkeypatch.setattr(refresh, "test_media_servers", fake)
+    resp = await async_client.post(
+        "/api/providers/test",
+        data={
+            "provider_type": "local_directory",
+            "scan_plex_url": PLEX_URL,
+            "scan_plex_token": "test-plex-token",
+        },
+    )
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["paths"] == []
+
+
+async def test_system_check_media_server_rows_only_for_configured(
+    async_client, db_session: AsyncSession, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "plex.example.com":
+            return httpx.Response(200, json={})
+        return httpx.Response(401)
+
+    monkeypatch.setattr(
+        refresh,
+        "_client",
+        lambda timeout: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), timeout=timeout
+        ),
+    )
+    await make_delivery_provider(
+        db_session, scan_plex_url=PLEX_URL, scan_plex_token="test-plex-token"
+    )
+    await db_session.commit()
+    html = await _check(async_client)
+    assert "Delivery: Plex refresh" in html
+    assert "Delivery: Jellyfin refresh" not in html
+
+    provider = await provider_service.get_delivery_provider(db_session)
+    assert provider is not None
+    provider.config_json = (
+        '{"scan_jellyfin_url": "http://jf.example.com",'
+        ' "scan_jellyfin_api_key": "test-jf-key"}'
+    )
+    await db_session.commit()
+    html = await _check(async_client)
+    assert "Delivery: Jellyfin refresh" in html and "HTTP 401 Unauthorized" in html
+    assert "Delivery: Plex refresh" not in html

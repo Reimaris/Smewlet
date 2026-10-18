@@ -2009,6 +2009,32 @@ _DELIVERY_TEMPLATE_FIELDS = (
 )
 
 
+_DELIVERY_SECRET_FIELDS = ("scan_plex_token", "scan_jellyfin_api_key")
+
+
+def _scan_config_from_form(form: Any, existing: Any = None) -> dict[str, Any]:
+    """Media-server scan fields from a raw form; a blank secret keeps the stored one."""
+
+    def text(key: str) -> str:
+        value = form.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    scan: dict[str, Any] = {}
+    for url_key, secret_key in (
+        ("scan_plex_url", "scan_plex_token"),
+        ("scan_jellyfin_url", "scan_jellyfin_api_key"),
+    ):
+        url = text(url_key).rstrip("/")
+        if url:
+            scan[url_key] = url
+            scan[secret_key] = text(secret_key) or getattr(existing, secret_key, None)
+        else:
+            scan[url_key] = scan[secret_key] = None
+    scan["scan_path_map_remote"] = text("scan_path_map_remote")
+    scan["scan_path_map_local"] = text("scan_path_map_local")
+    return scan
+
+
 def _delivery_form_values(provider: Any) -> dict[str, Any]:
     """Stored delivery config shaped for the edit form (buffer in GB)."""
     from dataclasses import asdict
@@ -2016,14 +2042,22 @@ def _delivery_form_values(provider: Any) -> dict[str, Any]:
     from app.services.delivery.config import DeliveryConfig
 
     values = asdict(DeliveryConfig.from_provider(provider))
+    for secret in _DELIVERY_SECRET_FIELDS:  # tokens are never sent to the browser
+        values[f"{secret}_set"] = bool(values.pop(secret))
     gb = values["min_free_buffer_bytes"] / 1024**3
     values["min_free_buffer_gb"] = int(gb) if gb == int(gb) else round(gb, 2)
     return values
 
 
-def _delivery_config_from_form(form: Any) -> tuple[dict[str, Any], str]:
+def _delivery_config_from_form(
+    form: Any, existing: Any = None
+) -> tuple[dict[str, Any], str]:
     """Build the delivery ``config_json`` dict from a raw form; returns ``(cfg, error)``."""
-    from app.services.delivery.config import DeliveryConfig, validate_templates
+    from app.services.delivery.config import (
+        DeliveryConfig,
+        validate_scan_settings,
+        validate_templates,
+    )
 
     def text(key: str) -> str:
         value = form.get(key)
@@ -2056,9 +2090,14 @@ def _delivery_config_from_form(form: Any) -> tuple[dict[str, Any], str]:
     )
     cfg["sab_path_map_remote"] = text("sab_path_map_remote")
     cfg["sab_path_map_local"] = text("sab_path_map_local")
-    unknown = validate_templates(DeliveryConfig(**cfg))
+    cfg.update(_scan_config_from_form(form, existing))
+    parsed = DeliveryConfig(**cfg)
+    unknown = validate_templates(parsed)
     if unknown:
         return {}, "Unknown template placeholder(s): " + ", ".join(unknown)
+    scan_error = validate_scan_settings(parsed)
+    if scan_error:
+        return {}, scan_error
     return cfg, ""
 
 
@@ -2067,15 +2106,18 @@ async def _save_delivery_provider(
 ) -> HTMLResponse:
     from app.db.models import Provider
     from app.services import provider_service
+    from app.services.delivery.config import DeliveryConfig
 
-    cfg, error = _delivery_config_from_form(await request.form())
-    if error:
-        return _form_error(error)
+    form = await request.form()
     async with async_session_factory() as session:
-        if provider_id:
-            provider = await session.get(Provider, provider_id)
-            if provider is None or provider.type != "local_directory":
-                raise HTTPException(status_code=404, detail="Provider not found")
+        provider = await session.get(Provider, provider_id) if provider_id else None
+        if provider_id and (provider is None or provider.type != "local_directory"):
+            raise HTTPException(status_code=404, detail="Provider not found")
+        existing = DeliveryConfig.from_provider(provider) if provider else None
+        cfg, error = _delivery_config_from_form(form, existing)
+        if error:
+            return _form_error(error)
+        if provider is not None:
             provider.name = name
             provider.is_active = is_active
             provider.config_json = json.dumps(cfg)
@@ -2108,6 +2150,10 @@ def _probe_directory(path: str) -> tuple[bool, str]:
 
 
 async def _test_delivery_paths(request: Request) -> JSONResponse:
+    from app.db.models import Provider
+    from app.services.delivery import refresh as delivery_refresh
+    from app.services.delivery.config import DeliveryConfig, validate_scan_settings
+
     form = await request.form()
     paths: list[dict[str, Any]] = []
     for field in _DELIVERY_PATH_FIELDS:
@@ -2117,17 +2163,50 @@ async def _test_delivery_paths(request: Request) -> JSONResponse:
             continue
         ok, detail = await asyncio.to_thread(_probe_directory, value)
         paths.append({"field": field, "path": value, "ok": ok, "detail": detail})
-    if not paths:
+
+    existing = None
+    raw_id = form.get("provider_id")
+    if isinstance(raw_id, str) and raw_id.isdigit():
+        async with async_session_factory() as session:
+            provider = await session.get(Provider, int(raw_id))
+            if provider is not None and provider.type == "local_directory":
+                existing = DeliveryConfig.from_provider(provider)
+    scan_cfg = DeliveryConfig(**_scan_config_from_form(form, existing))
+    scan_error = validate_scan_settings(scan_cfg)
+    if scan_error:
         return JSONResponse(
-            {"ok": False, "message": "Configure at least one path.", "paths": []}
+            {"ok": False, "message": scan_error, "paths": paths, "servers": []}
         )
-    failed = sum(1 for p in paths if not p["ok"])
-    message = (
-        "All paths are writable."
-        if not failed
-        else f"{failed} of {len(paths)} path(s) failed."
+    results = await delivery_refresh.test_media_servers(scan_cfg)
+    servers = [{"server": r.server, "ok": r.ok, "detail": r.detail} for r in results]
+
+    if not paths and not servers:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Configure at least one path.",
+                "paths": [],
+                "servers": [],
+            }
+        )
+    failed = sum(1 for p in paths if not p["ok"]) + sum(
+        1 for r in servers if not r["ok"]
     )
-    return JSONResponse({"ok": not failed, "message": message, "paths": paths})
+    if not servers:
+        message = (
+            "All paths are writable."
+            if not failed
+            else f"{failed} of {len(paths)} path(s) failed."
+        )
+    else:
+        message = (
+            "All checks passed."
+            if not failed
+            else f"{failed} of {len(paths) + len(servers)} check(s) failed."
+        )
+    return JSONResponse(
+        {"ok": not failed, "message": message, "paths": paths, "servers": servers}
+    )
 
 
 @app.post("/api/providers/test")
@@ -4329,6 +4408,7 @@ async def run_system_check(request: Request):
             }
 
     async def probe_delivery(provider: Provider) -> list[dict[str, Any]]:
+        from app.services.delivery import refresh as delivery_refresh
         from app.services.delivery.config import DeliveryConfig
 
         cfg = DeliveryConfig.from_provider(provider)
@@ -4345,6 +4425,17 @@ async def run_system_check(request: Request):
                     "category": "Delivery",
                     "ok": ok,
                     "msg": f"{path} — {detail}",
+                    "latency_ms": int((time.perf_counter() - start) * 1000),
+                }
+            )
+        start = time.perf_counter()
+        for r in await delivery_refresh.test_media_servers(cfg):
+            rows.append(
+                {
+                    "name": f"Delivery: {r.server.capitalize()} refresh",
+                    "category": "Delivery",
+                    "ok": r.ok,
+                    "msg": r.detail or "Connected",
                     "latency_ms": int((time.perf_counter() - start) * 1000),
                 }
             )
