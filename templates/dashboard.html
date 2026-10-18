@@ -3,6 +3,7 @@
 
 {% block content %}
 <div id="outage-banner" hx-get="/api/outages/banner" hx-trigger="every 30s" hx-swap="innerHTML">{% include "partials/outage_banner.html" %}</div>
+<div id="delivery-offline-banner" hx-get="/api/delivery/offline-banner" hx-trigger="every 30s" hx-swap="innerHTML">{% include "partials/delivery_offline_banner.html" %}</div>
 {% if show_onboarding %}
 <div hx-get="/onboarding/modal"
      hx-trigger="load[(function(){ try { return sessionStorage.getItem('nzb_onboarding_dismissed') !== '1'; } catch (e) { return true; } })()]"

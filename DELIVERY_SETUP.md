@@ -108,7 +108,15 @@ Queued or running **cloud** deliveries (TorBox, Premiumize) show an **Abort** bu
 
 SABnzbd deliveries are near-instant hardlinks and cannot be aborted; they have no Abort button.
 
-## 7. Troubleshooting
+## 7. When the NAS is off
+
+If the library storage becomes unreachable (NAS powered down, NFS/SMB export gone, stale mount), Smewlet does not fail every queued file. The delivery in progress is **paused** with the status *Delivery paused: storage offline*, its half-written `.part` file is removed, and the rest of the queue is **held**: new deliveries are accepted and wait behind it. A banner on the dashboard shows the affected folders and the next check time.
+
+Smewlet checks the storage again after 1, 2, 4, 8 and 16 minutes, then every 30 minutes. As soon as it is reachable, the paused delivery resumes first and the queue continues on its own. No action is needed; *Retry Delivery* on a paused row just moves it to the end of the queue.
+
+A folder that is reachable but unwritable (wrong permissions, read-only mount) is not treated as offline: that delivery fails with a readable message and the next one proceeds. Queue state is kept in memory; after a restart Smewlet probes the storage once and resumes or waits again.
+
+## 8. Troubleshooting
 
 | Message | What to check |
 |---|---|

@@ -599,3 +599,26 @@ async def test_history_badge_storage_offline(db_session: Any) -> None:
     macro = env.get_template("partials/_delivery_ui.html").module.delivery_badge
     html = macro({"delivery_status": "paused", "delivery_error": "STORAGE_OFFLINE"})
     assert "PAUSED: STORAGE OFFLINE" in html
+
+
+async def test_offline_banner_hidden_online_shown_offline(async_client: Any) -> None:
+    from pathlib import Path
+
+    from app.services.delivery import offline
+
+    url = "/api/delivery/offline-banner"
+    assert "data-delivery-offline-banner" not in (await async_client.get(url)).text
+
+    await offline.mark_offline(Path("/mnt/media_offline"))
+    try:
+        html = (await async_client.get(url)).text
+        dashboard = (await async_client.get("/")).text
+    finally:
+        await offline.stop_watcher()
+
+    ctx_label = offline.offline_banner_context()  # cleared by stop_watcher
+    assert ctx_label is None
+    assert 'data-delivery-offline-banner="true"' in html
+    assert "/mnt/media_offline" in html
+    assert "resume automatically (next check " in html
+    assert 'id="delivery-offline-banner"' in dashboard

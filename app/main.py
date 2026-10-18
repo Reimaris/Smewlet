@@ -58,6 +58,7 @@ from app.db.database import (
     get_session_factory,
     init_db,
 )
+from app.services.delivery.offline import offline_banner_context
 from app.version import APP_NAME, APP_VERSION
 
 if TYPE_CHECKING:
@@ -203,6 +204,7 @@ def _current_rate_limit_source() -> str:
 
 templates.env.globals["rate_limit_source"] = _current_rate_limit_source
 templates.env.globals["outage_banner"] = outage_banner_context
+templates.env.globals["delivery_offline_banner"] = offline_banner_context
 templates.env.globals["outage_active"] = has_active_outage
 from app.services.indexers.catalog import (  # noqa: E402
     INDEXER_PRESETS,
@@ -1217,6 +1219,14 @@ async def outage_banner_partial(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "partials/outage_banner.html", {})
 
 
+@app.get("/api/delivery/offline-banner", response_class=HTMLResponse)
+async def delivery_offline_banner_partial(request: Request) -> HTMLResponse:
+    """Storage-offline banner partial (empty while the media storage is reachable)."""
+    return templates.TemplateResponse(
+        request, "partials/delivery_offline_banner.html", {}
+    )
+
+
 def _outage_span(provider: str, label: str) -> HTMLResponse:
     msg = html.escape(f"Service outage: {provider} returned {label}. Try again later.")
     return HTMLResponse(
@@ -2176,6 +2186,27 @@ def _probe_directory(path: str) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"Not writable: {exc.strerror or exc}"
     return True, "Writable"
+
+
+async def _probe_delivery_folder(path: str) -> tuple[bool, str]:
+    """Bounded System Check probe: a hung or stale mount reports 'unreachable'."""
+    from pathlib import Path as _Path
+
+    from app.services.delivery.offline import PROBE_TIMEOUT_SECONDS, probe_root
+
+    if not path.startswith("/"):
+        return False, "Not an absolute path"
+    if await probe_root(_Path(path)):
+        return await asyncio.to_thread(_probe_directory, path)
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(os.stat, path), timeout=PROBE_TIMEOUT_SECONDS
+        )
+    except FileNotFoundError:
+        return False, "Directory does not exist"
+    except (OSError, TimeoutError):
+        pass
+    return False, "Delivery folder unreachable (storage offline?)"
 
 
 async def _test_delivery_paths(request: Request) -> JSONResponse:
@@ -4448,7 +4479,7 @@ async def run_system_check(request: Request):
             if not path:  # unconfigured paths are never reported failed
                 continue
             start = time.perf_counter()
-            ok, detail = await asyncio.to_thread(_probe_directory, path)
+            ok, detail = await _probe_delivery_folder(path)
             rows.append(
                 {
                     "name": f"Delivery: {field.removesuffix('_path').replace('_', ' ')}",

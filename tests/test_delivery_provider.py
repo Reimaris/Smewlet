@@ -736,3 +736,23 @@ def test_form_values_accept_none_for_new_provider() -> None:
     from app.main import _delivery_form_values
 
     assert _delivery_form_values(None)["scan_server"] == "none"
+
+
+async def test_system_check_hung_delivery_probe_fails_unreachable(
+    async_client, db_session: AsyncSession, tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    import time
+
+    from app.services.delivery import offline
+
+    movies = tmp_path / "movies"
+    movies.mkdir()
+    await make_delivery_provider(db_session, movies_path=str(movies))
+    await db_session.commit()
+    monkeypatch.setattr(offline, "PROBE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(offline, "_probe_sync", lambda root: time.sleep(0.3) or True)
+
+    html = await _check(async_client)
+
+    assert "Delivery: movies" in html
+    assert "Delivery folder unreachable (storage offline?)" in html

@@ -1,0 +1,6 @@
+{% set b = delivery_offline_banner() %}
+{% if b %}
+<div data-delivery-offline-banner="true" class="bg-amber-950/70 border border-amber-600/60 text-amber-100 shadow-lg shadow-amber-950/30 rounded-lg px-4 py-3 mb-4 text-sm font-semibold">
+    ⏸️ Delivery storage offline: {{ b.roots | join(", ") }}. Deliveries are queued and resume automatically (next check {{ b.next_check_label }}).
+</div>
+{% endif %}
