@@ -2,7 +2,34 @@
 
 This guide explains how to let Smewlet move finished downloads into your media library (the **Local directory** provider) and how to have Plex or Jellyfin rescan afterwards. Settings live under *Settings → Providers → Local directory*; every field there also has a short help line.
 
-## 1. Mount your library folders
+## 1. Which path goes where
+
+Delivery involves up to four programs, and each one may see the same folder under a different path. Most setup mistakes come from mixing these up, so keep them apart:
+
+| Where | What it is | Example |
+|---|---|---|
+| **Host path** | the real folder on your server | `/srv/media/series` |
+| **Smewlet path** | the same folder *inside the Smewlet container* | `/media/series` |
+| **Media server path** | the same folder as Jellyfin/Plex sees it | `/data/tv` |
+| **SABnzbd path** | where SABnzbd reports its finished downloads | `/downloads` |
+
+Rules of thumb:
+
+- The **Smewlet path** is the only one you type into the four path fields (Movies, Shows, Anime, Anime movies). Never enter a host path there.
+- You create the link between host path and Smewlet path yourself with a Docker volume (`host:container`, see below).
+- The **path maps** (sections 3 and 5) only translate between the Smewlet path and the media server / SABnzbd path. If both programs see the same path as Smewlet, you need no path map.
+
+### Worked example
+
+Your series live in `/srv/media/series` on the host. Jellyfin mounts that folder at `/data/tv`.
+
+1. Volume in `compose.yaml`: `/srv/media/series:/media/series` (host path : Smewlet path)
+2. *Shows path* in the dialog: `/media/series` (Smewlet path)
+3. Media server path map: server prefix `/data/tv`, Smewlet prefix `/media/series`
+
+Smewlet writes `/media/series/Show/Season 01/...`, then tells Jellyfin to refresh `/data/tv/Show/Season 01/...`.
+
+## 2. Mount your library folders
 
 Smewlet only sees folders that are mounted into its container. `compose.yaml` contains a commented example; uncomment and adjust the left-hand (host) side:
 
@@ -10,7 +37,7 @@ Smewlet only sees folders that are mounted into its container. `compose.yaml` co
 volumes:
   - ./config:/app/config
   - /srv/media/movies:/media/movies
-  - /srv/media/tv:/media/tv
+  - /srv/media/series:/media/series
   - /srv/media/anime:/media/anime
   - /srv/media/anime-movies:/media/anime-movies
 ```
@@ -31,11 +58,11 @@ The container runs as UID 1000. That user needs write access to every library fo
 
 A library mounted `:ro` cannot receive files. The failure reads *Read-only file system … (the mount is read-only)*. Remove `:ro` from the mount.
 
-## 2. SABnzbd: same filesystem and path map
+## 3. SABnzbd: same filesystem and path map
 
 SABnzbd downloads are filed with a **hardlink** (or a move across filesystems), not copied. For hardlinks, SABnzbd's completed-download folder and the library must be on the same filesystem and both mounted into Smewlet from that filesystem.
 
-If SABnzbd reports paths differently from how Smewlet sees them, set the **SABnzbd path map**:
+If SABnzbd reports paths differently from how Smewlet sees them, set the **SABnzbd path map** (SABnzbd path → Smewlet path):
 
 | Field | Example | Meaning |
 |---|---|---|
@@ -44,7 +71,7 @@ If SABnzbd reports paths differently from how Smewlet sees them, set the **SABnz
 
 Set both or leave both empty. Smewlet swaps the remote prefix for the local one.
 
-## 3. Naming templates
+## 4. Naming templates
 
 The four templates (movie, show, anime, anime movie) are prefilled with the defaults. Available placeholders:
 
@@ -57,7 +84,7 @@ The four templates (movie, show, anime, anime movie) are prefilled with the defa
 
 After the first delivery of an anime entry, its folder name is remembered. Later episodes and upgrades land in the same folder even if you change the anime title language afterwards, so Jellyfin/Plex never sees a duplicate series. Existing delivered entries are pinned automatically on startup.
 
-## 4. Media server refresh (optional)
+## 5. Media server refresh (optional)
 
 Pick one server in the **Media server** dropdown: *None*, *Plex* or *Jellyfin*. Only the selected server is refreshed and tested; saving clears the other server's settings.
 
@@ -73,15 +100,15 @@ If the server sees your library under a different path than Smewlet does, set th
 | Situation | Server prefix | Smewlet prefix |
 |---|---|---|
 | Both containers mount the share the same way | `/media` | `/media` |
-| Jellyfin mounts the library at `/data/tv`, Smewlet at `/media/tv` | `/data/tv` | `/media/tv` |
+| Jellyfin mounts the library at `/data/tv`, Smewlet at `/media/series` | `/data/tv` | `/media/series` |
 
-## 5. Aborting a delivery
+## 6. Aborting a delivery
 
 Queued or running **cloud** deliveries (TorBox, Premiumize) show an **Abort** button in Active Pushes and the push history. Aborting stops the stream, removes the partial `.part` file and returns the row to its idle state, so *Deliver to Library* is offered again. Files that were already delivered stay in the library.
 
 SABnzbd deliveries are near-instant hardlinks and cannot be aborted; they have no Abort button.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Message | What to check |
 |---|---|
