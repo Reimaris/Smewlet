@@ -145,6 +145,13 @@ async def test_plex_fetches_sections_once_per_burst(requests) -> None:
     assert [r.url.path for r in seen].count("/library/sections") == 1
 
 
+async def test_refresh_logs_the_mode_that_ran(requests, caplog) -> None:
+    requests(lambda r: httpx.Response(204))
+    with caplog.at_level("INFO", logger=refresh.logger.name):
+        await refresh.refresh_media_servers(_jf_cfg(), [Path("/data/media/anime/A")])
+    assert "jellyfin library refresh: targeted (1 folder(s))" in caplog.text
+
+
 async def test_test_results_carry_own_latency(requests) -> None:
     requests(lambda r: httpx.Response(200, json=SECTIONS))
     res = await refresh.test_media_servers(_plex_cfg())

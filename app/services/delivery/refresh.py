@@ -246,7 +246,11 @@ async def refresh_media_servers(
     if cfg.jellyfin_configured:
         results.append(await _jellyfin_refresh(cfg, mapped))
     for r in results:
-        if not r.ok:
+        if r.ok:
+            logger.info(
+                "%s library refresh: %s (%d folder(s))", r.server, r.mode, len(mapped)
+            )
+        else:
             logger.warning("%s library refresh failed: %s", r.server, r.detail)
     return results
 
