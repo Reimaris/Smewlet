@@ -488,6 +488,7 @@ async def test_scan_settings_saved_and_blank_token_keeps_stored(
         data={
             "name": "Local directory",
             "provider_type": "local_directory",
+            "scan_server": "plex",
             "scan_plex_url": PLEX_URL + "/",
             "scan_plex_token": "",
             "scan_jellyfin_url": "http://jf.example.com:8096",
@@ -499,7 +500,8 @@ async def test_scan_settings_saved_and_blank_token_keeps_stored(
     assert resp.status_code == 200
     cfg = DeliveryConfig.from_provider(await _delivery_row(db_session))
     assert (cfg.scan_plex_url, cfg.scan_plex_token) == (PLEX_URL, "test-plex-token")
-    assert cfg.jellyfin_configured is True
+    assert cfg.plex_configured is True
+    assert (cfg.scan_jellyfin_url, cfg.scan_jellyfin_api_key) == (None, None)
     assert (cfg.scan_path_map_remote, cfg.scan_path_map_local) == (
         "/media",
         "/data/media",
@@ -530,10 +532,14 @@ async def test_blank_scan_url_clears_url_and_token(
 @pytest.mark.parametrize(
     "data",
     [
-        {"scan_plex_url": "ftp://plex.example.com"},
-        {"scan_jellyfin_url": "not a url"},
-        {"scan_path_map_remote": "/media"},
-        {"scan_path_map_remote": "media", "scan_path_map_local": "/data"},
+        {"scan_server": "plex", "scan_plex_url": "ftp://plex.example.com"},
+        {"scan_server": "jellyfin", "scan_jellyfin_url": "not a url"},
+        {"scan_server": "plex", "scan_path_map_remote": "/media"},
+        {
+            "scan_server": "plex",
+            "scan_path_map_remote": "media",
+            "scan_path_map_local": "/data",
+        },
     ],
 )
 async def test_invalid_scan_settings_return_422(
@@ -584,10 +590,9 @@ async def test_test_endpoint_includes_servers(
             "provider_type": "local_directory",
             "provider_id": str(provider.id),
             "movies_path": str(tmp_path),
+            "scan_server": "plex",
             "scan_plex_url": PLEX_URL,
             "scan_plex_token": "",
-            "scan_jellyfin_url": "http://jf.example.com",
-            "scan_jellyfin_api_key": "test-jf-key",
         },
     )
     body = resp.json()
@@ -653,3 +658,73 @@ async def test_system_check_media_server_rows_only_for_configured(
     html = await _check(async_client)
     assert "Delivery: Jellyfin refresh" in html and "HTTP 401 Unauthorized" in html
     assert "Delivery: Plex refresh" not in html
+
+
+_PLEX_FORM = {"scan_plex_url": PLEX_URL, "scan_plex_token": "test-plex-token"}
+_JF_FORM = {
+    "scan_jellyfin_url": "http://jf.example.com:8096",
+    "scan_jellyfin_api_key": "test-jf-key",
+}
+
+
+async def test_scan_server_jellyfin_drops_plex_fields(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    resp = await _save_delivery(
+        async_client, scan_server="jellyfin", **_PLEX_FORM, **_JF_FORM
+    )
+    assert resp.status_code == 200
+    cfg = DeliveryConfig.from_provider(await _delivery_row(db_session))
+    assert cfg.scan_server == "jellyfin"
+    assert cfg.scan_plex_url is None and cfg.scan_plex_token is None
+    assert cfg.jellyfin_configured is True
+
+
+async def test_scan_server_none_clears_credentials_and_path_map(
+    async_client, db_session: AsyncSession
+) -> None:  # type: ignore[no-untyped-def]
+    resp = await _save_delivery(
+        async_client,
+        scan_server="none",
+        scan_path_map_remote="/media",
+        scan_path_map_local="/data/media",
+        **_PLEX_FORM,
+        **_JF_FORM,
+    )
+    assert resp.status_code == 200
+    cfg = DeliveryConfig.from_provider(await _delivery_row(db_session))
+    assert cfg.scan_server == "none"
+    assert (cfg.scan_plex_url, cfg.scan_plex_token) == (None, None)
+    assert (cfg.scan_jellyfin_url, cfg.scan_jellyfin_api_key) == (None, None)
+    assert (cfg.scan_path_map_remote, cfg.scan_path_map_local) == ("", "")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            '{"scan_plex_url": "http://p", "scan_plex_token": "t", '
+            '"scan_jellyfin_url": "http://j", "scan_jellyfin_api_key": "k"}',
+            "none",
+        ),
+        ('{"scan_jellyfin_url": "http://j", "scan_jellyfin_api_key": "k"}', "jellyfin"),
+        ('{"scan_plex_url": "http://p", "scan_plex_token": "t"}', "plex"),
+        ("{}", "none"),
+        (
+            '{"scan_server": "bogus", "scan_plex_url": "http://p", '
+            '"scan_plex_token": "t"}',
+            "none",
+        ),
+    ],
+)
+def test_legacy_rows_derive_scan_server(raw: str, expected: str) -> None:
+    cfg = _cfg(raw)
+    assert cfg.scan_server == expected
+    assert cfg.plex_configured is (expected == "plex")
+    assert cfg.jellyfin_configured is (expected == "jellyfin")
+
+
+def test_form_values_accept_none_for_new_provider() -> None:
+    from app.main import _delivery_form_values
+
+    assert _delivery_form_values(None)["scan_server"] == "none"

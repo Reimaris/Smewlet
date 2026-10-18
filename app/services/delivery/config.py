@@ -42,6 +42,18 @@ _OPTIONAL_STR_FIELDS = (
 _URL_FIELDS = ("scan_plex_url", "scan_jellyfin_url")
 
 
+SCAN_SERVERS = ("none", "plex", "jellyfin")
+
+
+def derive_scan_server(plex_set: bool, jellyfin_set: bool) -> str:
+    """Legacy rule: exactly one fully configured server wins, otherwise ``none``."""
+    if plex_set and not jellyfin_set:
+        return "plex"
+    if jellyfin_set and not plex_set:
+        return "jellyfin"
+    return "none"
+
+
 @dataclass(frozen=True)
 class DeliveryConfig:
     """Parsed ``config_json`` of the ``local_directory`` delivery provider."""
@@ -75,16 +87,23 @@ class DeliveryConfig:
     scan_jellyfin_api_key: str | None = None
     scan_path_map_remote: str = ""
     scan_path_map_local: str = ""
+    scan_server: str = "none"
 
     @property
     def plex_configured(self) -> bool:
-        """True when both the Plex URL and token are set."""
-        return bool(self.scan_plex_url and self.scan_plex_token)
+        """True when Plex is the selected server and both its URL and token are set."""
+        return bool(
+            self.scan_server == "plex" and self.scan_plex_url and self.scan_plex_token
+        )
 
     @property
     def jellyfin_configured(self) -> bool:
-        """True when both the Jellyfin URL and API key are set."""
-        return bool(self.scan_jellyfin_url and self.scan_jellyfin_api_key)
+        """True when Jellyfin is selected and both its URL and API key are set."""
+        return bool(
+            self.scan_server == "jellyfin"
+            and self.scan_jellyfin_url
+            and self.scan_jellyfin_api_key
+        )
 
     @classmethod
     def from_provider(cls, provider: Provider) -> DeliveryConfig:
@@ -100,6 +119,8 @@ class DeliveryConfig:
         for f in fields(cls):
             default = getattr(defaults, f.name)
             value = raw.get(f.name, default)
+            if f.name == "scan_server":
+                continue
             if f.name in _OPTIONAL_STR_FIELDS:
                 values[f.name] = _clean_optional_str(value, f.name in _URL_FIELDS)
                 continue
@@ -110,6 +131,14 @@ class DeliveryConfig:
         if values["min_free_buffer_bytes"] < 0:
             values["min_free_buffer_bytes"] = defaults.min_free_buffer_bytes
         values["delivery_max_parallel"] = 1  # pinned in m78
+        server = raw.get("scan_server")
+        if "scan_server" in raw:
+            values["scan_server"] = server if server in SCAN_SERVERS else "none"
+        else:
+            values["scan_server"] = derive_scan_server(
+                bool(values["scan_plex_url"] and values["scan_plex_token"]),
+                bool(values["scan_jellyfin_url"] and values["scan_jellyfin_api_key"]),
+            )
         return cls(**values)
 
 

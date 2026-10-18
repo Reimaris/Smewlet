@@ -2021,6 +2021,7 @@ _DELIVERY_SECRET_FIELDS = ("scan_plex_token", "scan_jellyfin_api_key")
 
 def _scan_config_from_form(form: Any, existing: Any = None) -> dict[str, Any]:
     """Media-server scan fields from a raw form; a blank secret keeps the stored one."""
+    from app.services.delivery.config import SCAN_SERVERS, derive_scan_server
 
     def text(key: str) -> str:
         value = form.get(key)
@@ -2037,18 +2038,34 @@ def _scan_config_from_form(form: Any, existing: Any = None) -> dict[str, Any]:
             scan[secret_key] = text(secret_key) or getattr(existing, secret_key, None)
         else:
             scan[url_key] = scan[secret_key] = None
-    scan["scan_path_map_remote"] = text("scan_path_map_remote")
-    scan["scan_path_map_local"] = text("scan_path_map_local")
+    server = text("scan_server")
+    if server not in SCAN_SERVERS:
+        server = derive_scan_server(
+            bool(scan["scan_plex_url"] and scan["scan_plex_token"]),
+            bool(scan["scan_jellyfin_url"] and scan["scan_jellyfin_api_key"]),
+        )
+    scan["scan_server"] = server
+    if server != "plex":
+        scan["scan_plex_url"] = scan["scan_plex_token"] = None
+    if server != "jellyfin":
+        scan["scan_jellyfin_url"] = scan["scan_jellyfin_api_key"] = None
+    if server == "none":
+        scan["scan_path_map_remote"] = scan["scan_path_map_local"] = ""
+    else:
+        scan["scan_path_map_remote"] = text("scan_path_map_remote")
+        scan["scan_path_map_local"] = text("scan_path_map_local")
     return scan
 
 
-def _delivery_form_values(provider: Any) -> dict[str, Any]:
+def _delivery_form_values(provider: Any | None) -> dict[str, Any]:
     """Stored delivery config shaped for the edit form (buffer in GB)."""
     from dataclasses import asdict
 
     from app.services.delivery.config import DeliveryConfig
 
-    values = asdict(DeliveryConfig.from_provider(provider))
+    values = asdict(
+        DeliveryConfig() if provider is None else DeliveryConfig.from_provider(provider)
+    )
     for secret in _DELIVERY_SECRET_FIELDS:  # tokens are never sent to the browser
         values[f"{secret}_set"] = bool(values.pop(secret))
     gb = values["min_free_buffer_bytes"] / 1024**3

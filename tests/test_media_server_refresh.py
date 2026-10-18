@@ -36,11 +36,18 @@ def _cfg(**kw: object) -> DeliveryConfig:
 
 
 def _plex_cfg(**kw: object) -> DeliveryConfig:
-    return _cfg(scan_plex_url=PLEX, scan_plex_token="test-plex-token", **kw)
+    return _cfg(
+        scan_server="plex", scan_plex_url=PLEX, scan_plex_token="test-plex-token", **kw
+    )
 
 
 def _jf_cfg(**kw: object) -> DeliveryConfig:
-    return _cfg(scan_jellyfin_url=JF, scan_jellyfin_api_key="test-jf-key", **kw)
+    return _cfg(
+        scan_server="jellyfin",
+        scan_jellyfin_url=JF,
+        scan_jellyfin_api_key="test-jf-key",
+        **kw,
+    )
 
 
 @pytest.fixture
@@ -363,3 +370,12 @@ async def test_jellyfin_test_connection(requests) -> None:
     res = await refresh.test_media_servers(_jf_cfg())
     assert res[0].ok and res[0].mode == "test"
     assert seen[0].url.path == "/System/Info"
+
+
+async def test_only_the_selected_server_is_refreshed_and_tested(requests) -> None:
+    seen = requests(lambda r: httpx.Response(200, json=SECTIONS))
+    cfg = _plex_cfg(scan_jellyfin_url=JF, scan_jellyfin_api_key="test-jf-key")
+    assert cfg.jellyfin_configured is False
+    results = await refresh.test_media_servers(cfg)
+    assert [r.server for r in results] == ["plex"]
+    assert {r.url.host for r in seen} == {httpx.URL(PLEX).host}
