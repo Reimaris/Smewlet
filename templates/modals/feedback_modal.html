@@ -81,7 +81,7 @@
                 <span x-show="!copied">Copy Diagnostics Table</span>
                 <span x-show="copied" x-cloak class="text-green-400">✓ Copied to Clipboard!</span>
             </button>
-            <a :href="issueFormUrls[activeTab]" href="{{ issue_form_urls[initial_tab] }}" target="_blank" rel="noopener noreferrer" class="w-full sm:w-auto text-center bg-[#d40060] hover:bg-[#a3004a] text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-lg shadow-[#d40060]/20"x-text="activeTab === 'question' ? 'Open GitHub Discussions' : 'Open GitHub Issue Form'">Open GitHub Issue Form</a>
+            <a :href="issueFormUrls[activeTab]" href="{{ issue_form_urls[initial_tab] }}" target="_blank" rel="noopener noreferrer" class="w-full sm:w-auto text-center bg-[#d40060] hover:bg-[#a3004a] text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-lg shadow-[#d40060]/20" x-text="activeTab === 'question' ? 'Open GitHub Discussions' : 'Open GitHub Issue Form'">Open GitHub Issue Form</a>
         </div>
     </div>
 </div>

@@ -88,6 +88,7 @@ async def test_modal_other_tabs(async_client, tab):
     )
     for url in (GITHUB_BUG_REPORT_URL, GITHUB_FEATURE_REQUEST_URL, GITHUB_QUESTION_URL):
         assert url in resp.text
+    assert "Open GitHub Discussions" in resp.text
 
 
 async def test_modal_invalid_type(async_client):
