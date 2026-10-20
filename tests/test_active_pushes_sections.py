@@ -141,3 +141,28 @@ def test_assign_section_plain_rows() -> None:
     assert assign_section({"delivery_status": "none"}) == "downloads"
     assert assign_section({"delivery_status": "pending"}) == "deliveries"
     assert assign_section({"delivery_status": "delivered"}) == "downloads"
+
+
+async def test_detached_ad_hoc_delivery_row_is_listed(db_session, monkeypatch) -> None:
+    row = await make_history(
+        db_session,
+        is_ad_hoc=True,
+        media_title="Ad Hoc Movie",
+        media_year=2026,
+        media_type_label="movie",
+        target_label="Movie",
+        is_dismissed=False,
+        completed_at=_ago(1),
+        deliver_enabled=True,
+        delivery_status="pending",
+        nzb_guid="guid-adhoc-1",
+    )
+    await db_session.commit()
+    monkeypatch.setattr(worker, "_queued_ids", [row.id])
+
+    (r,) = await get_active_pushes(db_session)
+
+    assert r["section"] == "deliveries"
+    assert r["title_and_target"] == "Ad Hoc Movie (2026)"
+    assert r["queue_position"] == 1
+    assert r["media_item_id"] is None

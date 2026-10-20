@@ -2088,18 +2088,20 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
 
     for h in rows:
         item = h.media_item
-        if item is None:
+        if item is None and not h.is_ad_hoc:
             continue
         season = h.season
         episode = h.episode
 
-        # Determine current entity status
+        # Determine current entity status (detached ad-hoc rows have no entity)
         if episode is not None:
             entity_status = episode.status.value
         elif season is not None:
             entity_status = season.status.value
-        else:
+        elif item is not None:
             entity_status = item.status.value
+        else:
+            entity_status = "downloading"
 
         detail_lower = (h.status_detail or "").lower()
         is_rate_limited = (
@@ -2155,6 +2157,9 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
         if is_delivery:
             is_recently_completed = False
 
+        if item is None and is_failed:
+            continue  # no entity to re-search; failed ad-hoc pushes live in the ledger
+
         if not (
             is_active_downloading
             or is_failed
@@ -2164,18 +2169,29 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
         ):
             continue
 
-        target_key = (item.id, h.season_id, h.episode_id)
+        if item is not None:
+            target_key = (item.id, h.season_id, h.episode_id)
+        else:
+            target_key = (-h.id, None, None)
         if target_key in seen_targets:
             continue
         seen_targets.add(target_key)
 
-        target_label = discord.format_target_label(
-            item=item, season=season, episode=episode
-        )
-        display_title = anime_title_for(item, language)
+        if item is not None:
+            target_label = discord.format_target_label(
+                item=item, season=season, episode=episode
+            )
+            display_title = anime_title_for(item, language)
+            row_title = item.title
+            row_year = item.year
+        else:
+            target_label = h.target_label or "Movie"
+            display_title = h.media_title or h.nzb_title
+            row_title = display_title
+            row_year = h.media_year
         title_and_target = (
-            f"{display_title} ({item.year})"
-            if target_label == "Movie" and item.year
+            f"{display_title} ({row_year})"
+            if target_label == "Movie" and row_year
             else (
                 display_title
                 if target_label == "Movie"
@@ -2235,11 +2251,14 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
         else:
             status_badge = "Downloading"
 
-        item_media_type = (
-            item.media_type.value
-            if hasattr(item.media_type, "value")
-            else str(item.media_type or "")
-        )
+        if item is not None:
+            item_media_type = (
+                item.media_type.value
+                if hasattr(item.media_type, "value")
+                else str(item.media_type or "")
+            )
+        else:
+            item_media_type = (h.media_type_label or "movie").lower()
         feature_pills = build_release_feature_pills(
             release_title=h.nzb_title,
             score=h.score,
@@ -2247,7 +2266,7 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             is_fallback=bool(getattr(h, "is_fallback", False)),
             matched_language=h.grabbed_language,
             bitrate_mbps=h.bitrate_mbps,
-            runtime_minutes=item.runtime_minutes,
+            runtime_minutes=item.runtime_minutes if item else None,
             media_type=item_media_type,
             season_episode_count=season.episode_count if season else None,
         )
@@ -2281,10 +2300,10 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
                 "downloader_type": _row_downloader_type(h),
                 "downloader_name": DOWNLOADER_DISPLAY_NAMES[_row_downloader_type(h)],
                 "downloader_transfer_id": h.downloader_transfer_id,
-                "media_item_id": item.id,
+                "media_item_id": item.id if item else None,
                 "season_id": h.season_id,
                 "episode_id": h.episode_id,
-                "media_title": item.title,
+                "media_title": row_title,
                 "display_title": display_title,
                 "target_label": target_label,
                 "title_and_target": title_and_target,
