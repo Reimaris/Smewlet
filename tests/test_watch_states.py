@@ -287,6 +287,79 @@ async def test_unwatched_released_season_is_not_awaiting(db_session):
     assert classify_v3_status_tier(item) != "on_hold"
 
 
+async def _with_s1_episodes(session, item, statuses, **s2):
+    from app.db.models import Episode
+
+    for n, st in enumerate(statuses, start=1):
+        session.add(
+            Episode(
+                season_id=item.seasons[0].id,
+                episode_number=n,
+                monitored=True,
+                status=st,
+            )
+        )
+    await session.commit()
+    return await _load_full(session, item.id)
+
+
+def _eps(done: int, pending: int, future: int = 0, ignored: int = 0):
+    from app.db.models import EpisodeStatus as E
+
+    return (
+        [E.DOWNLOADED] * done
+        + [E.PENDING] * pending
+        + [E.FUTURE] * future
+        + [E.IGNORED] * ignored
+    )
+
+
+@pytest.mark.parametrize(
+    ("statuses", "awaiting"),
+    [
+        (_eps(1, 23), False),
+        (_eps(24, 0), True),
+        (_eps(12, 0, future=12), True),
+        (_eps(11, 1, future=12), False),
+        (_eps(23, 0, ignored=1), True),
+    ],
+)
+async def test_awaiting_requires_fully_downloaded_latest_season(
+    db_session, statuses, awaiting
+):
+    item = await _awaiting_series(db_session)
+    item = await _with_s1_episodes(db_session, item, statuses)
+    assert is_awaiting_seasons(item) is awaiting
+    assert (classify_v3_status_tier(item) == "on_hold") is awaiting
+
+
+async def test_older_incomplete_season_is_ignored_for_awaiting(db_session):
+    from app.db.models import SeasonStatus
+
+    item = await _awaiting_series(
+        db_session,
+        s2={"air_date": _PAST, "status": SeasonStatus.DOWNLOADED},
+        watched=2,
+    )
+    from app.db.models import Season as S
+
+    s3 = S(
+        media_item_id=item.id,
+        season_number=3,
+        watch_order=3,
+        type_number=3,
+        entry_type="season",
+        title="Season 3",
+        status=SeasonStatus.FUTURE,
+        air_date=None,
+    )
+    db_session.add(s3)
+    await db_session.commit()
+    item = await _with_s1_episodes(db_session, item, _eps(1, 23))
+    # S1 partial, S2 (latest released, no episode rows) complete via status fallback
+    assert is_awaiting_seasons(item)
+
+
 async def test_active_download_beats_on_hold(db_session):
     from app.db.models import SeasonStatus
 

@@ -2115,31 +2115,45 @@ def has_future_seasons(item: MediaItem) -> bool:
     )
 
 
-def _has_downloaded_released_season(item: MediaItem) -> bool:
-    """True when any released regular season (or one of its episodes) is downloaded."""
+def _season_fully_downloaded(season: Season) -> bool:
+    """True when every aired episode is downloaded; falls back to Season.status."""
     from sqlalchemy import inspect as sa_inspect
 
-    done_season = (SeasonStatus.DOWNLOADED, SeasonStatus.COMPLETED)
     done_ep = (EpisodeStatus.DOWNLOADED, EpisodeStatus.COMPLETED)
-    for s in _loaded_seasons(item):
-        if s.season_number <= 0 or s.status in (
-            SeasonStatus.IGNORED,
-            SeasonStatus.FUTURE,
-        ):
-            continue
-        if s.status in done_season:
-            return True
-        if "episodes" not in sa_inspect(s).unloaded and any(
-            ep.status in done_ep for ep in s.episodes or []
-        ):
-            return True
-    return False
+    done_season = (SeasonStatus.DOWNLOADED, SeasonStatus.COMPLETED)
+    if "episodes" not in sa_inspect(season).unloaded:
+        aired = [
+            ep
+            for ep in season.episodes or []
+            if ep.status not in (EpisodeStatus.FUTURE, EpisodeStatus.IGNORED)
+        ]
+        if aired:
+            return all(ep.status in done_ep for ep in aired)
+    return season.status in done_season
+
+
+def _latest_released_season_complete(item: MediaItem) -> bool:
+    """True when every regular season at ``latest_released_order(item)`` is fully downloaded."""
+    lro = latest_released_order(item)
+    if lro <= 0:
+        return False
+    candidates = [
+        s
+        for s in _loaded_seasons(item)
+        if s.season_number > 0
+        and s.status not in (SeasonStatus.IGNORED, SeasonStatus.FUTURE)
+        and s.air_date is not None
+        and not is_future_or_tba(s.air_date)
+        and int(s.watch_order or 0) == lro
+    ]
+    return bool(candidates) and all(_season_fully_downloaded(s) for s in candidates)
 
 
 def is_awaiting_seasons(item: MediaItem) -> bool:
     """True for a series whose user has watched every released season while more are pending.
 
-    A series with nothing downloaded yet is never awaiting: its released season still needs pushing.
+    A series whose latest released season is not fully downloaded is never awaiting: its
+    remaining episodes still need pushing.
     """
     from app.core.push_engine import effective_watch_order
 
@@ -2151,7 +2165,7 @@ def is_awaiting_seasons(item: MediaItem) -> bool:
     return (
         lro > 0
         and effective_watch_order(item) >= lro
-        and _has_downloaded_released_season(item)
+        and _latest_released_season_complete(item)
     )
 
 

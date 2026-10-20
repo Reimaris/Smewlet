@@ -32,7 +32,7 @@ It keeps your **Movies**, **TV Series** and **Anime** in sync with your watchlis
 ## Key Features
 
 - **Multi-Provider Watchlists:** Sync Simkl, AniList, Plex, MyAnimeList, Jellyseerr and Overseerr simultaneously, with cross-provider deduplication and furthest-progress tracking.
-- **Five Watch States & On Hold:** Plan to watch, watching, on hold, completed and dropped are tracked from every provider. Paused lists and fully watched series waiting for a new season move to an "On Hold & Awaiting Seasons" dashboard section and are never auto-pushed. A series only counts as awaiting once one of its released seasons has been downloaded; until then it stays ready to push.
+- **Five Watch States & On Hold:** Plan to watch, watching, on hold, completed and dropped are tracked from every provider. Paused lists and fully watched series waiting for a new season move to an "On Hold & Awaiting Seasons" dashboard section and are never auto-pushed. A series only counts as awaiting once its latest released season is fully downloaded; until then it stays ready to push. On the Movies tab the section is titled "On Hold" and only appears for movies on a paused list.
 - **Anime Title Language:** Choose romaji, English or native titles in Settings; dashboard search matches every language, including the seasons and movies inside a franchise.
 - **Smart On-Demand Acquisition:** 1-click auto-push, a preset-governed season pack matrix, opt-in air-date auto-pushes, and time-bounded episode upgrades.
 - **3-Layer Security & Fake Detection:** Layer 1 filters indexer metadata, Layer 2 inspects the NZB XML in memory before dispatch, and Layer 3 verifies the downloader's filelist, with an unpack grace period for archives.
