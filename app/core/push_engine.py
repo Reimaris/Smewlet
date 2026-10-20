@@ -508,7 +508,7 @@ async def _localized_requery(
     """Query the indexers again with the TMDB title in ``language`` (None if not useful)."""
     from app.services.localized_titles import get_localized_title
 
-    if not language or language.lower() == "en":
+    if not language or language.lower() in ("en", "any"):
         return None
     try:
         item = await session.get(MediaItem, item_id)
