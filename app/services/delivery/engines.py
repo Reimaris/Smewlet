@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import errno
+import http.client
+import io
 import logging
 import os
 import posixpath
+import queue
 import shutil
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 4 * 1024 * 1024
 WRITE_QUEUE_DEPTH = 8
+REQUEST_TIMEOUT = 120.0
+PROGRESS_THROTTLE = 0.25
 PART_CLEANUP_TIMEOUT = 5.0
 EXPIRED_STATUSES = frozenset({401, 403, 404})
 
@@ -64,10 +74,26 @@ def clear_abort(history_id: int) -> None:
 ProgressCallback = Callable[[int, int], Awaitable[None]]  # (bytes_done, bytes_total)
 
 
-def _client_factory() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0, read=120.0), follow_redirects=True
-    )
+_urlopen = urllib.request.urlopen  # test seam
+
+
+def _open_stream(url: str) -> io.BufferedIOBase:
+    """Open ``url`` (redirects followed), mapping failures to ``_FileError`` codes.
+
+    Bulk downloads use the stdlib instead of httpx: its asyncio/h11 stack was
+    CPU-bound at ~30 MB/s on one core, while ``readinto`` on a plain socket
+    roughly doubles that.
+    """
+    safe = urllib.parse.quote(url, safe="%/:=&?~#+!$,;'@()*[]")
+    try:
+        return _urlopen(safe, timeout=REQUEST_TIMEOUT)  # type: ignore[no-any-return]
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        if exc.code in EXPIRED_STATUSES:
+            raise _FileError("LINK_EXPIRED") from None
+        raise _FileError(f"HTTP {exc.code}") from None
+    except (OSError, http.client.HTTPException) as exc:
+        raise _FileError(f"Network error: {type(exc).__name__}") from None
 
 
 class DeliveryEngine(Protocol):
@@ -187,14 +213,6 @@ class _BaseEngine:
                 await _record(
                     session, history, planned, "failed", "INSUFFICIENT_STORAGE"
                 )
-            except httpx.HTTPError as exc:
-                await _record(
-                    session,
-                    history,
-                    planned,
-                    "failed",
-                    f"Network error: {type(exc).__name__}",
-                )
             except OSError as exc:
                 if exc.errno in OFFLINE_ERRNOS:
                     root = library_root_of(planned, cfg)
@@ -264,59 +282,126 @@ class CloudStreamEngine(_BaseEngine):
         check_free_space(dest.parent, link.size_bytes, cfg.min_free_buffer_bytes)
         await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
-        written = 0
+        loop = asyncio.get_running_loop()
+        stop = threading.Event()
+        last_report = 0.0
+        pending: concurrent.futures.Future[None] | None = None
+
+        async def report(done: int) -> None:
+            if self._progress is not None:
+                await self._progress(done, link.size_bytes)
+
+        def on_bytes(done: int) -> None:
+            # Runs in the writer thread: hand throttled progress to the event loop.
+            nonlocal last_report, pending
+            now = time.monotonic()
+            if (
+                self._progress is None
+                or now - last_report < PROGRESS_THROTTLE
+                or (pending is not None and not pending.done())
+            ):
+                return
+            last_report = now
+            pending = asyncio.run_coroutine_threadsafe(report(done), loop)
+
+        job = asyncio.ensure_future(
+            asyncio.to_thread(
+                _fetch_to_file, link.url, part, history_id, stop, on_bytes
+            )
+        )
+
+        async def drain() -> None:
+            # The session is not shared across tasks: finish progress first.
+            if pending is not None:
+                await asyncio.wrap_future(pending)
+
         try:
-            async with _client_factory() as client:
-                async with client.stream("GET", link.url) as resp:
-                    if resp.status_code in EXPIRED_STATUSES:
-                        raise _FileError("LINK_EXPIRED")
-                    if resp.status_code >= 400:
-                        raise _FileError(f"HTTP {resp.status_code}")
-                    with part.open("wb") as fh:
-                        # Overlap network reads with (NFS) writes via a bounded queue.
-                        queue: asyncio.Queue[bytes | None] = asyncio.Queue(
-                            WRITE_QUEUE_DEPTH
-                        )
-
-                        async def writer() -> None:
-                            nonlocal written
-                            while (chunk := await queue.get()) is not None:
-                                await asyncio.to_thread(fh.write, chunk)
-                                written += len(chunk)
-                                if is_abort_requested(history_id):
-                                    raise DeliveryAborted
-                                if self._progress is not None:
-                                    await self._progress(written, link.size_bytes)
-
-                        write_task = asyncio.create_task(writer())
-                        try:
-                            async for chunk in resp.aiter_bytes(CHUNK_BYTES):
-                                if is_abort_requested(history_id):
-                                    raise DeliveryAborted
-                                put = asyncio.ensure_future(queue.put(chunk))
-                                await asyncio.wait(
-                                    {put, write_task},
-                                    return_when=asyncio.FIRST_COMPLETED,
-                                )
-                                if not put.done():
-                                    put.cancel()
-                                    break  # writer failed; surfaced below
-                            if not write_task.done():
-                                await queue.put(None)
-                            await write_task
-                        finally:
-                            if not write_task.done():
-                                write_task.cancel()
-                                with contextlib.suppress(asyncio.CancelledError):
-                                    await write_task
-                        await asyncio.to_thread(fh.flush)
-                        await asyncio.to_thread(os.fsync, fh.fileno())
+            try:
+                written = await asyncio.shield(job)
+            except asyncio.CancelledError:
+                stop.set()
+                with contextlib.suppress(BaseException):
+                    await job
+                with contextlib.suppress(BaseException):
+                    await drain()
+                raise
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await drain()
+                raise
+            await drain()
             if written != link.size_bytes:
                 raise _FileError("SIZE_MISMATCH")
+            await report(written)
             await asyncio.to_thread(os.replace, part, dest)
         except BaseException:
             part.unlink(missing_ok=True)
             raise
+
+
+def _fetch_to_file(
+    url: str,
+    part: Path,
+    history_id: int,
+    stop: threading.Event,
+    on_bytes: Callable[[int], None],
+) -> int:
+    """Blocking GET of ``url`` into ``part``; returns the bytes written.
+
+    A reader thread fills 4 MiB buffers while this thread writes them, so network
+    and (NFS) writes overlap. Both release the GIL while they wait on I/O.
+    """
+    chunks: queue.Queue[tuple[bytearray, int] | BaseException | None] = queue.Queue(
+        WRITE_QUEUE_DEPTH
+    )
+
+    def put(item: tuple[bytearray, int] | BaseException | None) -> None:
+        while not stop.is_set():
+            try:
+                chunks.put(item, timeout=0.2)
+                return
+            except queue.Full:
+                continue
+
+    def reader() -> None:
+        try:
+            with _open_stream(url) as resp:
+                while not stop.is_set():
+                    buf = bytearray(CHUNK_BYTES)
+                    try:
+                        n = resp.readinto(buf)
+                    except (OSError, http.client.HTTPException) as exc:
+                        raise _FileError(
+                            f"Network error: {type(exc).__name__}"
+                        ) from None
+                    if not n:
+                        break
+                    put((buf, n))
+        except BaseException as exc:
+            put(exc)
+        finally:
+            put(None)
+
+    thread = threading.Thread(target=reader, name="delivery-reader", daemon=True)
+    thread.start()
+    written = 0
+    try:
+        with part.open("wb") as fh:
+            while (item := chunks.get()) is not None:
+                if isinstance(item, BaseException):
+                    raise item
+                buf, n = item
+                fh.write(memoryview(buf)[:n])
+                written += n
+                if stop.is_set() or is_abort_requested(history_id):
+                    raise DeliveryAborted
+                on_bytes(written)
+            fh.flush()
+            os.fsync(fh.fileno())
+    finally:
+        stop.set()
+        thread.join()
+    return written
 
 
 class LocalLinkEngine(_BaseEngine):

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import io
 import os
+import urllib.error
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -36,7 +39,7 @@ from app.services.downloaders.base import (
     TransferState,
 )
 from app.services.downloaders.sabnzbd import SabnzbdDownloader
-from tests.conftest import make_history
+from tests.conftest import fake_urlopen, make_history
 
 NAME = "Example.Show.S01E01.1080p.WEB-DL.x265-GRP.mkv"
 URL = "https://example.com/dl/file.mkv"
@@ -216,15 +219,15 @@ async def _row(session: AsyncSession) -> DeliveredFile:
     return (await session.execute(select(DeliveredFile))).scalars().one()
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, status: int = 200, body: bytes = PAYLOAD):
-    def factory() -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=httpx.MockTransport(
-                lambda r: httpx.Response(status, content=body)
-            )
-        )
+def _raise(exc: Exception) -> Any:
+    def _open(*_a: Any, **_k: Any) -> None:
+        raise exc
 
-    monkeypatch.setattr(engines, "_client_factory", factory)
+    return _open
+
+
+def _serve(monkeypatch: pytest.MonkeyPatch, status: int = 200, body: bytes = PAYLOAD):
+    monkeypatch.setattr(engines, "_urlopen", fake_urlopen(status, body))
 
 
 @pytest.mark.parametrize(
@@ -296,6 +299,119 @@ async def test_expired_link(
     row = await _row(db_session)
     assert (row.status, row.error) == ("failed", "LINK_EXPIRED")
     assert not (tmp_path / "ep.mkv.part").exists()
+
+
+async def test_http_error_status_is_recorded(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    history = await make_history(db_session, nzb_guid="g3b")
+    use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=3000)]))
+    _serve(monkeypatch, status=503, body=b"")
+
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("ep.mkv", tmp_path / "ep.mkv")], CFG
+    )
+
+    row = await _row(db_session)
+    assert (row.status, row.error) == ("failed", "HTTP 503")
+
+
+class _ResettingStream(io.BytesIO):
+    """Delivers one full buffer, then the connection drops."""
+
+    def readinto(self, b: Any) -> int:
+        if self.tell():
+            raise ConnectionResetError("peer reset")
+        return super().readinto(b)
+
+
+@pytest.mark.parametrize(
+    ("opener", "expected"),
+    [
+        (_raise(urllib.error.URLError("dns failure")), "Network error: URLError"),
+        (
+            lambda *_a, **_k: _ResettingStream(PAYLOAD),
+            "Network error: ConnectionResetError",
+        ),
+    ],
+)
+async def test_network_errors_are_recorded_without_leftovers(
+    opener, expected, db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    history = await make_history(db_session, nzb_guid="g3c")
+    use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=3000)]))
+    monkeypatch.setattr(engines, "_urlopen", opener)
+    monkeypatch.setattr(engines, "CHUNK_BYTES", 1000)
+
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("ep.mkv", tmp_path / "ep.mkv")], CFG
+    )
+
+    row = await _row(db_session)
+    assert (row.status, row.error) == ("failed", expected)
+    assert "example.com" not in (row.error or "")
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_multi_chunk_download_is_ordered_and_url_is_quoted(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    body = bytes(range(256)) * 10  # 2560 bytes -> 3 chunks of 1000
+    history = await make_history(db_session, nzb_guid="g3d")
+    link = DownloadLink(
+        name="ep.mkv", url="https://example.com/dl/my file.mkv?t=a", size_bytes=2560
+    )
+    use_client(_FakeClient([link]))
+    opened: list[str] = []
+
+    def opener(url: str, timeout: float | None = None) -> io.BytesIO:
+        opened.append(url)
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(engines, "_urlopen", opener)
+    monkeypatch.setattr(engines, "CHUNK_BYTES", 1000)
+    dest = tmp_path / "ep.mkv"
+
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("ep.mkv", dest, 2560)], CFG
+    )
+
+    assert dest.read_bytes() == body
+    assert opened == ["https://example.com/dl/my%20file.mkv?t=a"]
+
+
+async def test_progress_finishes_before_engine_continues(
+    db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    """Progress runs on the shared session, so it must never overlap later work."""
+    history = await make_history(db_session, nzb_guid="g3e")
+    use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=3000)]))
+    _serve(monkeypatch)
+    monkeypatch.setattr(engines, "CHUNK_BYTES", 1000)
+    monkeypatch.setattr(engines, "PROGRESS_THROTTLE", 0)
+    running = 0
+    overlaps: list[int] = []
+
+    async def slow_progress(done: int, total: int) -> None:
+        nonlocal running
+        running += 1
+        await asyncio.sleep(0.05)
+        running -= 1
+
+    real_record = engines._record
+
+    async def record(*args: Any) -> None:
+        overlaps.append(running)
+        await real_record(*args)
+
+    monkeypatch.setattr(engines, "_record", record)
+
+    await CloudStreamEngine(slow_progress).deliver(
+        db_session, history, [_plan("ep.mkv", tmp_path / "ep.mkv")], CFG
+    )
+
+    assert overlaps == [0]
+    assert (await _row(db_session)).status == "delivered"
 
 
 async def test_existing_target_same_size_not_rewritten_else_conflict(

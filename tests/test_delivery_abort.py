@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from app.core.transfer_poller import _delivery_fields
 from app.db.models import DeliveredFile
 from app.services.delivery import engines, worker
 from tests.conftest import (
+    PAYLOAD,
     FakeDownloaderClient,
     make_delivery_provider,
     make_history,
@@ -77,19 +79,23 @@ async def test_running_abort_removes_part_and_keeps_delivered_rows(
         notified.append("sent")
 
     monkeypatch.setattr(worker, "_notify", no_notify)
-    seen = 0
-    real_write = engines.asyncio.to_thread
+    opened: list[io.BytesIO] = []
 
-    async def abort_after_first_chunk(fn: Any, *a: Any, **k: Any) -> Any:
-        nonlocal seen
-        result = await real_write(fn, *a, **k)
-        if getattr(fn, "__name__", "") == "write":
-            seen += 1
-            if seen == 1:
-                assert await worker.abort_delivery(db_session, h.id) is True
-        return result
+    class AbortingStream(io.BytesIO):
+        """The user aborts while the second chunk is still being fetched."""
 
-    monkeypatch.setattr(engines.asyncio, "to_thread", abort_after_first_chunk)
+        def readinto(self, b: Any) -> int:
+            if self.tell():
+                engines.request_abort(
+                    h.id
+                )  # what abort_delivery does for a running row
+            n = super().readinto(b)
+            opened.append(self)
+            return n
+
+    monkeypatch.setattr(
+        engines, "_urlopen", lambda url, timeout=None: AbortingStream(PAYLOAD)
+    )
     h.delivery_status = "delivering"
     await db_session.commit()
 
@@ -97,7 +103,7 @@ async def test_running_abort_removes_part_and_keeps_delivered_rows(
 
     await db_session.refresh(h)
     assert (h.delivery_status, h.deliver_enabled) == ("none", False)
-    assert seen == 1
+    assert len(opened) >= 2
     assert not list(tmp_path.rglob("*.part"))
     assert notified == []
     assert not engines.is_abort_requested(h.id)

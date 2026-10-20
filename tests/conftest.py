@@ -20,12 +20,14 @@ Domain Factory Helpers (importable async functions)
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import urllib.error
 from collections.abc import AsyncGenerator
+from email.message import Message
 from typing import Any
 
-import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -658,6 +660,19 @@ async def seed_setup_ready(session: AsyncSession) -> None:
 
 NAME = "Example.Show.S01E01.1080p.WEB-DL.mkv"
 PAYLOAD = b"x" * 3000
+
+
+def fake_urlopen(status: int = 200, body: bytes = PAYLOAD) -> Any:
+    """Stand-in for ``engines._urlopen``: serves ``body`` or raises ``HTTPError``."""
+
+    def _open(url: str, timeout: float | None = None) -> io.BytesIO:
+        if status >= 400:
+            raise urllib.error.HTTPError(url, status, "err", Message(), None)
+        return io.BytesIO(body)
+
+    return _open
+
+
 URL = "https://example.com/dl/file.mkv"
 
 
@@ -702,14 +717,6 @@ def downloader(monkeypatch: pytest.MonkeyPatch):
 
         for mod in (delivery_worker, delivery_engines):
             monkeypatch.setattr(mod, "get_downloader_client_for_type", get)
-        monkeypatch.setattr(
-            delivery_engines,
-            "_client_factory",
-            lambda: httpx.AsyncClient(
-                transport=httpx.MockTransport(
-                    lambda r: httpx.Response(200, content=PAYLOAD)
-                )
-            ),
-        )
+        monkeypatch.setattr(delivery_engines, "_urlopen", fake_urlopen())
 
     return _set
