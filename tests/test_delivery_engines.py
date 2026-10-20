@@ -8,6 +8,7 @@ import io
 import os
 import urllib.error
 from dataclasses import replace
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -364,8 +365,8 @@ async def test_multi_chunk_download_is_ordered_and_url_is_quoted(
     use_client(_FakeClient([link]))
     opened: list[str] = []
 
-    def opener(url: str, timeout: float | None = None) -> io.BytesIO:
-        opened.append(url)
+    def opener(request: Any, timeout: float | None = None) -> io.BytesIO:
+        opened.append(request.full_url)
         return io.BytesIO(body)
 
     monkeypatch.setattr(engines, "_urlopen", opener)
@@ -378,6 +379,120 @@ async def test_multi_chunk_download_is_ordered_and_url_is_quoted(
 
     assert dest.read_bytes() == body
     assert opened == ["https://example.com/dl/my%20file.mkv?t=a"]
+
+
+BIG = bytes(range(256)) * 14  # 3584 bytes -> 4 ranges of 1000
+
+
+@pytest.fixture
+def ranged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(engines, "RANGE_BYTES", 1000)
+    monkeypatch.setattr(engines, "RANGED_MIN_BYTES", 1000)
+    monkeypatch.setattr(engines, "CHUNK_BYTES", 400)
+    monkeypatch.setattr(engines, "PROGRESS_THROTTLE", 0)
+    monkeypatch.setattr(engines, "RANGE_RETRY_DELAY", 0)
+
+
+async def _deliver_big(db_session, use_client, tmp_path, nzb_guid: str) -> Path:
+    history = await make_history(db_session, nzb_guid=nzb_guid)
+    use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=len(BIG))]))
+    dest = tmp_path / "ep.mkv"
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("ep.mkv", dest, len(BIG))], CFG
+    )
+    return dest
+
+
+@pytest.mark.parametrize("honors_ranges", [True, False])
+async def test_large_file_uses_ranges_or_falls_back(
+    honors_ranges, ranged, db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    base = fake_urlopen(body=BIG, ranges=honors_ranges)
+    requested: list[str | None] = []
+
+    def opener(request: Any, timeout: float | None = None) -> Any:
+        requested.append(request.get_header("Range"))
+        return base(request, timeout)
+
+    monkeypatch.setattr(engines, "_urlopen", opener)
+
+    dest = await _deliver_big(db_session, use_client, tmp_path, "g-rng")
+
+    assert dest.read_bytes() == BIG
+    assert (await _row(db_session)).status == "delivered"
+    assert list(tmp_path.iterdir()) == [dest]
+    if honors_ranges:
+        assert sorted(r for r in requested if r != "bytes=0-0") == [
+            "bytes=0-999",
+            "bytes=1000-1999",
+            "bytes=2000-2999",
+            "bytes=3000-3583",
+        ]
+    else:
+        assert requested == ["bytes=0-0", None]
+
+
+async def test_range_retries_transient_network_error(
+    ranged, db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    base = fake_urlopen(body=BIG)
+    failed: list[str] = []
+
+    def opener(request: Any, timeout: float | None = None) -> Any:
+        if request.get_header("Range") == "bytes=1000-1999" and not failed:
+            failed.append("once")
+            raise urllib.error.URLError("reset")
+        return base(request, timeout)
+
+    monkeypatch.setattr(engines, "_urlopen", opener)
+
+    dest = await _deliver_big(db_session, use_client, tmp_path, "g-rng2")
+
+    assert failed == ["once"]
+    assert dest.read_bytes() == BIG
+
+
+async def test_range_hard_failure_fails_file_and_removes_part(
+    ranged, db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    base = fake_urlopen(body=BIG)
+
+    def opener(request: Any, timeout: float | None = None) -> Any:
+        if request.get_header("Range") == "bytes=2000-2999":
+            raise urllib.error.HTTPError(URL, 503, "busy", Message(), None)
+        return base(request, timeout)
+
+    monkeypatch.setattr(engines, "_urlopen", opener)
+
+    await _deliver_big(db_session, use_client, tmp_path, "g-rng3")
+
+    row = await _row(db_session)
+    assert (row.status, row.error) == ("failed", "HTTP 503")
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_range_abort_removes_part(
+    ranged, db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    base = fake_urlopen(body=BIG)
+
+    def opener(request: Any, timeout: float | None = None) -> Any:
+        if request.get_header("Range") == "bytes=1000-1999":
+            engines.request_abort(history.id)
+        return base(request, timeout)
+
+    monkeypatch.setattr(engines, "_urlopen", opener)
+    history = await make_history(db_session, nzb_guid="g-rng4")
+    use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=len(BIG))]))
+    engine = CloudStreamEngine()
+
+    with pytest.raises(engines.DeliveryAborted):
+        await engine.deliver(
+            db_session, history, [_plan("ep.mkv", tmp_path / "ep.mkv", len(BIG))], CFG
+        )
+
+    engines.clear_abort(history.id)
+    assert list(tmp_path.iterdir()) == []
 
 
 async def test_progress_finishes_before_engine_continues(

@@ -662,13 +662,33 @@ NAME = "Example.Show.S01E01.1080p.WEB-DL.mkv"
 PAYLOAD = b"x" * 3000
 
 
-def fake_urlopen(status: int = 200, body: bytes = PAYLOAD) -> Any:
-    """Stand-in for ``engines._urlopen``: serves ``body`` or raises ``HTTPError``."""
+class FakeResponse(io.BytesIO):
+    """Minimal ``urlopen`` response: body plus ``status`` and ``headers``."""
 
-    def _open(url: str, timeout: float | None = None) -> io.BytesIO:
+    def __init__(self, body: bytes, status: int = 200, headers: Any = None) -> None:
+        super().__init__(body)
+        self.status = status
+        self.headers = headers or {}
+
+
+def fake_urlopen(status: int = 200, body: bytes = PAYLOAD, ranges: bool = True) -> Any:
+    """Stand-in for ``engines._urlopen``: serves ``body`` (honoring ``Range`` unless
+    ``ranges`` is false) or raises ``HTTPError``."""
+
+    def _open(request: Any, timeout: float | None = None) -> FakeResponse:
+        url = getattr(request, "full_url", request)
         if status >= 400:
             raise urllib.error.HTTPError(url, status, "err", Message(), None)
-        return io.BytesIO(body)
+        spec = request.get_header("Range") if hasattr(request, "get_header") else None
+        if spec and ranges:
+            first, _, last = spec.removeprefix("bytes=").partition("-")
+            a, b = int(first), min(int(last), len(body) - 1)
+            return FakeResponse(
+                body[a : b + 1],
+                206,
+                {"Content-Range": f"bytes {a}-{b}/{len(body)}"},
+            )
+        return FakeResponse(body)
 
     return _open
 

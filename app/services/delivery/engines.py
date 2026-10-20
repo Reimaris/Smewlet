@@ -47,6 +47,11 @@ logger = logging.getLogger(__name__)
 
 CHUNK_BYTES = 4 * 1024 * 1024
 WRITE_QUEUE_DEPTH = 8
+RANGE_BYTES = 32 * 1024 * 1024
+RANGE_WORKERS = 4
+RANGE_RETRIES = 2
+RANGE_RETRY_DELAY = 1.0
+RANGED_MIN_BYTES = 2 * RANGE_BYTES
 REQUEST_TIMEOUT = 120.0
 PROGRESS_THROTTLE = 0.25
 PART_CLEANUP_TIMEOUT = 5.0
@@ -77,7 +82,9 @@ ProgressCallback = Callable[[int, int], Awaitable[None]]  # (bytes_done, bytes_t
 _urlopen = urllib.request.urlopen  # test seam
 
 
-def _open_stream(url: str) -> io.BufferedIOBase:
+def _open_stream(
+    url: str, start: int | None = None, end: int | None = None
+) -> io.BufferedIOBase:
     """Open ``url`` (redirects followed), mapping failures to ``_FileError`` codes.
 
     Bulk downloads use the stdlib instead of httpx: its asyncio/h11 stack was
@@ -85,8 +92,11 @@ def _open_stream(url: str) -> io.BufferedIOBase:
     roughly doubles that.
     """
     safe = urllib.parse.quote(url, safe="%/:=&?~#+!$,;'@()*[]")
+    request = urllib.request.Request(safe)
+    if start is not None:
+        request.add_header("Range", f"bytes={start}-{end}")
     try:
-        return _urlopen(safe, timeout=REQUEST_TIMEOUT)  # type: ignore[no-any-return]
+        return _urlopen(request, timeout=REQUEST_TIMEOUT)  # type: ignore[no-any-return]
     except urllib.error.HTTPError as exc:
         exc.close()
         if exc.code in EXPIRED_STATUSES:
@@ -306,7 +316,13 @@ class CloudStreamEngine(_BaseEngine):
 
         job = asyncio.ensure_future(
             asyncio.to_thread(
-                _fetch_to_file, link.url, part, history_id, stop, on_bytes
+                _fetch_to_file,
+                link.url,
+                part,
+                link.size_bytes,
+                history_id,
+                stop,
+                on_bytes,
             )
         )
 
@@ -339,14 +355,146 @@ class CloudStreamEngine(_BaseEngine):
             raise
 
 
+def _read_into(resp: io.BufferedIOBase, view: memoryview) -> int:
+    """``readinto`` that reports socket/HTTP failures as network ``_FileError``s."""
+    try:
+        return resp.readinto(view) or 0
+    except (OSError, http.client.HTTPException) as exc:
+        raise _FileError(f"Network error: {type(exc).__name__}") from None
+
+
 def _fetch_to_file(
+    url: str,
+    part: Path,
+    size: int,
+    history_id: int,
+    stop: threading.Event,
+    on_bytes: Callable[[int], None],
+) -> int:
+    """Blocking GET of ``url`` into ``part``; returns the bytes written.
+
+    Large files use parallel range requests when the server honors them; anything
+    else streams over a single connection.
+    """
+    if size >= RANGED_MIN_BYTES and _supports_ranges(url, size):
+        return _fetch_ranged(url, part, size, history_id, stop, on_bytes)
+    return _fetch_single(url, part, history_id, stop, on_bytes)
+
+
+def _supports_ranges(url: str, size: int) -> bool:
+    """True when a 1-byte range probe returns 206 with the expected total size."""
+    try:
+        with _open_stream(url, 0, 0) as resp:
+            if getattr(resp, "status", None) != 206:
+                return False
+            header = getattr(resp, "headers", None)
+            total = (header.get("Content-Range") if header else None) or ""
+            return total.rpartition("/")[2] == str(size)
+    except _FileError as exc:
+        if exc.code.startswith("HTTP "):
+            return False  # e.g. 416: let the plain request report what is wrong
+        raise
+
+
+def _pwrite_all(fd: int, data: memoryview, offset: int) -> None:
+    while data:
+        n = os.pwrite(fd, data, offset)
+        data, offset = data[n:], offset + n
+
+
+def _fetch_ranged(
+    url: str,
+    part: Path,
+    size: int,
+    history_id: int,
+    stop: threading.Event,
+    on_bytes: Callable[[int], None],
+) -> int:
+    """Download ``size`` bytes with ``RANGE_WORKERS`` parallel range requests.
+
+    One connection tops out at one core of TLS work; each worker writes its range
+    at its own offset (``pwrite``), so reads and writes overlap across workers.
+    """
+    ranges = [(a, min(a + RANGE_BYTES, size) - 1) for a in range(0, size, RANGE_BYTES)]
+    lock = threading.Lock()
+    next_range = 0
+    written = 0
+
+    def take() -> tuple[int, int] | None:
+        nonlocal next_range
+        with lock:
+            if next_range >= len(ranges) or stop.is_set():
+                return None
+            next_range += 1
+            return ranges[next_range - 1]
+
+    def worker(fd: int) -> None:
+        nonlocal written
+        buf = bytearray(CHUNK_BYTES)
+        while (rng := take()) is not None:
+            pos, end = rng
+            retries = RANGE_RETRIES
+            while pos <= end and not stop.is_set():
+                try:
+                    with _open_stream(url, pos, end) as resp:
+                        if getattr(resp, "status", None) != 206:
+                            raise _FileError("RANGE_UNSUPPORTED")
+                        while pos <= end and not stop.is_set():
+                            view = memoryview(buf)[: min(CHUNK_BYTES, end - pos + 1)]
+                            n = _read_into(resp, view)
+                            if not n:
+                                raise _FileError("Network error: IncompleteRead")
+                            _pwrite_all(fd, view[:n], pos)
+                            pos += n
+                            with lock:
+                                written += n
+                            if is_abort_requested(history_id):
+                                raise DeliveryAborted
+                except _FileError as exc:
+                    if not exc.code.startswith("Network error") or retries == 0:
+                        raise
+                    retries -= 1
+                    stop.wait(RANGE_RETRY_DELAY)
+
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+    try:
+        os.ftruncate(fd, size)
+        count = min(RANGE_WORKERS, len(ranges))
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=count, thread_name_prefix="delivery-range"
+        ) as pool:
+            futures = [pool.submit(worker, fd) for _ in range(count)]
+            try:
+                while True:
+                    done, pending = concurrent.futures.wait(
+                        futures,
+                        timeout=PROGRESS_THROTTLE,
+                        return_when=concurrent.futures.FIRST_EXCEPTION,
+                    )
+                    on_bytes(written)
+                    if not pending or any(f.exception() for f in done):
+                        break
+            finally:
+                stop.set()  # lets the remaining workers wind down on failure
+        errors = [e for f in futures if (e := f.exception()) is not None]
+        if errors:
+            raise next(
+                (e for e in errors if not isinstance(e, DeliveryAborted)), errors[0]
+            )
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return written
+
+
+def _fetch_single(
     url: str,
     part: Path,
     history_id: int,
     stop: threading.Event,
     on_bytes: Callable[[int], None],
 ) -> int:
-    """Blocking GET of ``url`` into ``part``; returns the bytes written.
+    """Stream ``url`` into ``part`` over one connection; returns the bytes written.
 
     A reader thread fills 4 MiB buffers while this thread writes them, so network
     and (NFS) writes overlap. Both release the GIL while they wait on I/O.
@@ -368,12 +516,7 @@ def _fetch_to_file(
             with _open_stream(url) as resp:
                 while not stop.is_set():
                     buf = bytearray(CHUNK_BYTES)
-                    try:
-                        n = resp.readinto(buf)
-                    except (OSError, http.client.HTTPException) as exc:
-                        raise _FileError(
-                            f"Network error: {type(exc).__name__}"
-                        ) from None
+                    n = _read_into(resp, memoryview(buf))
                     if not n:
                         break
                     put((buf, n))
