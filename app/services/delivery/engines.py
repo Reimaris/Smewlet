@@ -37,7 +37,8 @@ from app.services.downloaders.factory import get_downloader_client_for_type
 
 logger = logging.getLogger(__name__)
 
-CHUNK_BYTES = 1024 * 1024
+CHUNK_BYTES = 4 * 1024 * 1024
+WRITE_QUEUE_DEPTH = 8
 PART_CLEANUP_TIMEOUT = 5.0
 EXPIRED_STATUSES = frozenset({401, 403, 404})
 
@@ -272,13 +273,42 @@ class CloudStreamEngine(_BaseEngine):
                     if resp.status_code >= 400:
                         raise _FileError(f"HTTP {resp.status_code}")
                     with part.open("wb") as fh:
-                        async for chunk in resp.aiter_bytes(CHUNK_BYTES):
-                            if is_abort_requested(history_id):
-                                raise DeliveryAborted
-                            await asyncio.to_thread(fh.write, chunk)
-                            written += len(chunk)
-                            if self._progress is not None:
-                                await self._progress(written, link.size_bytes)
+                        # Overlap network reads with (NFS) writes via a bounded queue.
+                        queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+                            WRITE_QUEUE_DEPTH
+                        )
+
+                        async def writer() -> None:
+                            nonlocal written
+                            while (chunk := await queue.get()) is not None:
+                                await asyncio.to_thread(fh.write, chunk)
+                                written += len(chunk)
+                                if is_abort_requested(history_id):
+                                    raise DeliveryAborted
+                                if self._progress is not None:
+                                    await self._progress(written, link.size_bytes)
+
+                        write_task = asyncio.create_task(writer())
+                        try:
+                            async for chunk in resp.aiter_bytes(CHUNK_BYTES):
+                                if is_abort_requested(history_id):
+                                    raise DeliveryAborted
+                                put = asyncio.ensure_future(queue.put(chunk))
+                                await asyncio.wait(
+                                    {put, write_task},
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                if not put.done():
+                                    put.cancel()
+                                    break  # writer failed; surfaced below
+                            if not write_task.done():
+                                await queue.put(None)
+                            await write_task
+                        finally:
+                            if not write_task.done():
+                                write_task.cancel()
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await write_task
                         await asyncio.to_thread(fh.flush)
                         await asyncio.to_thread(os.fsync, fh.fileno())
             if written != link.size_bytes:
