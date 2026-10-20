@@ -207,10 +207,11 @@ Mount your library folders into the container (see the commented example in `com
 
 ---
 
-## Reporting Problems
+## Questions & Reporting Problems
 
+- **Questions & Ideas:** Ask in [GitHub Discussions](https://github.com/Reimaris/Smewlet/discussions) ([Q&A](https://github.com/Reimaris/Smewlet/discussions/categories/q-a)). Use [Issues](https://github.com/Reimaris/Smewlet/issues) for reproducible bugs and concrete feature requests.
 - **Feedback Helper:** *Report a Bug* / *Request a Feature* / *Ask a Question* buttons on the Settings page open a launcher with privacy-safe diagnostics (version, Python, OS, deployment, active provider types; no keys, URLs or names). Smewlet never contacts GitHub itself. Security issues go through GitHub Private Vulnerability Reporting.
-- **Export Sanitized DB:** Settings → System Diagnostics & Health (and the Bug Report tab of the feedback launcher) downloads a copy of your database with API keys, tokens, bot credentials and webhooks removed, for attaching to bug reports when maintainers ask. Your library and server URLs stay in the file, so review it first, and zip it because GitHub rejects `.db` attachments.
+- **Export Sanitized DB:** Settings → System Diagnostics & Health (and the Bug Report tab of the feedback launcher) downloads a copy of your database with API keys, tokens, bot credentials and webhooks removed, for attaching to bug reports when I ask. Your library and server URLs stay in the file, so review it first, and zip it because GitHub rejects `.db` attachments.
 
 ---
 
