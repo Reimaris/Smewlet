@@ -1,4 +1,4 @@
 """Application version constant."""
 
 APP_NAME: str = "Smewlet"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
