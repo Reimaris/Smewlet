@@ -298,6 +298,8 @@ async def test_adhoc_movie_search_adds_localized_title(
 
     async def fake_search_movie(**kwargs):
         calls.append(kwargs["title"])
+        if kwargs["title"] == "Mein bester & ich":
+            assert kwargs["tmdb_id"] is None and kwargs["imdb_id"] is None
         return []
 
     monkeypatch.setattr(newznab_client, "search_movie", fake_search_movie)

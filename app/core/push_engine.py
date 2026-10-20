@@ -523,11 +523,16 @@ async def _localized_requery(
             return None
         if is_movie:
             raw = await _query_movie_across_indexers(
-                session, item, title_override=localized
+                session, item, title_override=localized, use_external_ids=False
             )
         else:
             raw = await _query_show_across_indexers(
-                session, item, season_number, episode_number, title_override=localized
+                session,
+                item,
+                season_number,
+                episode_number,
+                title_override=localized,
+                use_external_ids=False,
             )
     except Exception as exc:
         logger.debug("Localized-title fallback skipped for item %s: %s", item_id, exc)
@@ -888,9 +893,13 @@ async def _query_show_across_indexers(
     season_number: int | None,
     episode_number: int | None = None,
     title_override: str | None = None,
+    use_external_ids: bool = True,
 ) -> list[dict[str, Any]]:
     """Query active indexers for a TV/Anime season pack or episode."""
     search_title = title_override or item.title
+    tvdb_id = item.tvdb_id if use_external_ids else None
+    tmdb_id = item.tmdb_id if use_external_ids else None
+    imdb_id = item.imdb_id if use_external_ids else None
     kind = "anime" if item.media_type == MediaType.ANIME else "series"
 
     ep_str = str(episode_number) if episode_number is not None else None
@@ -917,9 +926,9 @@ async def _query_show_across_indexers(
                     cat_id,
                 )
                 res = await newznab_client.search_show(
-                    tvdb_id=item.tvdb_id,
-                    tmdb_id=item.tmdb_id,
-                    imdb_id=item.imdb_id,
+                    tvdb_id=tvdb_id,
+                    tmdb_id=tmdb_id,
+                    imdb_id=imdb_id,
                     title=search_title,
                     season=season_number,
                     ep=ep_str,
@@ -949,9 +958,9 @@ async def _query_show_across_indexers(
             cat_id,
         )
         res = await newznab_client.search_show(
-            tvdb_id=item.tvdb_id,
-            tmdb_id=item.tmdb_id,
-            imdb_id=item.imdb_id,
+            tvdb_id=tvdb_id,
+            tmdb_id=tmdb_id,
+            imdb_id=imdb_id,
             title=search_title,
             season=season_number,
             ep=ep_str,

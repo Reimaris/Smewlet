@@ -69,6 +69,8 @@ async def test_fallback_requery_selects_german_dl(db_session, monkeypatch, movie
     result = await _score(db_session, movie, [_raw(ENGLISH)])
     assert search.await_count == 1
     assert search.await_args.kwargs["title"] == "Mein bester und ich"
+    assert search.await_args.kwargs["tmdb_id"] is None
+    assert search.await_args.kwargs["imdb_id"] is None
     assert result["all_valid"][0]["title"] == GERMAN
     assert result["primary"]
 

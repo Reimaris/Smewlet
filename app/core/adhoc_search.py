@@ -161,6 +161,7 @@ async def _fetch_raw_releases(
     tvdb_id: int | None,
     season: int | None,
     episode: int | None,
+    title_only: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, str] | None]:
     """Run one Newznab search per distinct title and merge by guid/title."""
     from app.db.database import async_session_factory
@@ -182,6 +183,11 @@ async def _fetch_raw_releases(
         distinct = [None]
 
     def call(title: str | None, idx: Provider | None) -> Any:
+        # Indexers prefer ids over ``q``; a translated title must be searched alone.
+        ids_off = title is not None and title.lower() in title_only
+        c_imdb = None if ids_off else imdb_id
+        c_tmdb = None if ids_off else tmdb_id
+        c_tvdb = None if ids_off else tvdb_id
         if idx is not None:
             cat_id: int | str | None = (
                 resolve_categories(idx, kind) if kind in _CATEGORY_KINDS else None
@@ -201,8 +207,8 @@ async def _fetch_raw_releases(
             return newznab_client.search_movie(
                 title=title,
                 category=cat_id,
-                tmdb_id=tmdb_id,
-                imdb_id=imdb_id,
+                tmdb_id=c_tmdb,
+                imdb_id=c_imdb,
                 **idx_kwargs,
             )
         if kind == "series":
@@ -211,9 +217,9 @@ async def _fetch_raw_releases(
                 category=cat_id,
                 season=season,
                 ep=episode,
-                tvdb_id=tvdb_id,
-                tmdb_id=tmdb_id,
-                imdb_id=imdb_id,
+                tvdb_id=c_tvdb,
+                tmdb_id=c_tmdb,
+                imdb_id=c_imdb,
                 **idx_kwargs,
             )
         return newznab_client.search_raw(
@@ -221,9 +227,9 @@ async def _fetch_raw_releases(
             category=cat_id,
             season=season,
             ep=episode,
-            imdb_id=imdb_id,
-            tmdb_id=tmdb_id,
-            tvdb_id=tvdb_id,
+            imdb_id=c_imdb,
+            tmdb_id=c_tmdb,
+            tvdb_id=c_tvdb,
             **idx_kwargs,
         )
 
@@ -323,6 +329,9 @@ async def search_and_score_releases(
     )
     if localized:
         titles = [*titles, localized]
+        title_only = frozenset({localized.lower()})
+    else:
+        title_only = frozenset()
 
     raw_results, error_message, outage = await _fetch_raw_releases(
         kind=kind,
@@ -332,6 +341,7 @@ async def search_and_score_releases(
         tvdb_id=tvdb_id,
         season=season,
         episode=episode,
+        title_only=title_only,
     )
     if error_message:
         return AdHocSearchResult([], [], [], error_message, outage)
