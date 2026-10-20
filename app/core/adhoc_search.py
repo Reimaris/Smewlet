@@ -257,6 +257,31 @@ async def _fetch_raw_releases(
     return merged, None, None
 
 
+async def _localized_query_title(
+    *,
+    kind: str,
+    tmdb_id: int | None,
+    titles: list[str],
+    primary_language: str,
+) -> str | None:
+    """TMDB title in the Primary language (filter, else default preset), or None."""
+    from app.db.database import async_session_factory
+    from app.services.localized_titles import get_localized_title
+    from app.services.preset_service import get_default_preset
+
+    display = next((t for t in titles if t and t.strip()), "")
+    if tmdb_id is None or not display:
+        return None
+    async with async_session_factory() as session:
+        language: str | None = primary_language
+        if language in ("any", ""):
+            preset = await get_default_preset(session)
+            language = preset.primary_language if preset else None
+        return await get_localized_title(
+            kind, tmdb_id, language, display, session=session
+        )
+
+
 async def search_and_score_releases(
     *,
     kind: str,
@@ -289,6 +314,15 @@ async def search_and_score_releases(
         season = episode = None
     elif scope == "season":
         episode = None
+
+    localized = await _localized_query_title(
+        kind=kind,
+        tmdb_id=tmdb_id,
+        titles=titles,
+        primary_language=filters.primary_language,
+    )
+    if localized:
+        titles = [*titles, localized]
 
     raw_results, error_message, outage = await _fetch_raw_releases(
         kind=kind,

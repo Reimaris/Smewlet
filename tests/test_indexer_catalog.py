@@ -271,3 +271,52 @@ async def test_modal_edit_shows_stored_override(async_client, db_session):
     html = (await async_client.get(f"/settings/provider/{row.id}/edit")).text
     assert 'name="custom_movie_categories" value="2040"' in html
     assert "https://x.example/api" in html
+
+
+async def test_adhoc_movie_search_adds_localized_title(
+    monkeypatch, nzbgeek_indexer, db_session
+):
+    from unittest.mock import AsyncMock
+
+    from app.core.adhoc_search import AdHocFilters, search_and_score_releases
+    from app.services import localized_titles
+    from app.services.indexers import newznab as newznab_client
+
+    await nzbgeek_indexer("{}")
+    localized_titles.clear_localized_title_cache()
+    details = {
+        "translations": {
+            "translations": [
+                {"iso_639_1": "de", "data": {"title": "Mein bester & ich"}}
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        "app.services.tmdb.get_movie_details", AsyncMock(return_value=details)
+    )
+    calls = []
+
+    async def fake_search_movie(**kwargs):
+        calls.append(kwargs["title"])
+        return []
+
+    monkeypatch.setattr(newznab_client, "search_movie", fake_search_movie)
+    for lang, expected in (
+        ("de", ["The Upside", "Mein bester & ich"]),
+        ("en", ["The Upside"]),
+    ):
+        calls.clear()
+        await search_and_score_releases(
+            kind="movie",
+            scope="item",
+            titles=["The Upside"],
+            year=2017,
+            imdb_id=None,
+            tmdb_id=399057,
+            tvdb_id=None,
+            season=None,
+            episode=None,
+            filters=AdHocFilters(primary_language=lang),
+            limit=10,
+        )
+        assert sorted(calls) == sorted(expected)

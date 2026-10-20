@@ -444,6 +444,117 @@ async def _score_and_partition_candidates(
     session: AsyncSession | None = None,
     item_id: int | None = None,
 ) -> dict[str, Any]:
+    """Score and partition; re-query with the localized title if no Primary hit (m82)."""
+    kwargs: dict[str, Any] = {
+        "blacklisted_guids": blacklisted_guids,
+        "blacklisted_titles": blacklisted_titles,
+        "expected_title": expected_title,
+        "expected_year": expected_year,
+        "expected_season": expected_season,
+        "expected_episode": expected_episode,
+        "expected_season_title": expected_season_title,
+        "runtime_minutes": runtime_minutes,
+        "effective_cfg": effective_cfg,
+        "media_type": media_type,
+        "season_episode_count": season_episode_count,
+        "session": session,
+        "item_id": item_id,
+    }
+    partitioned = await _score_and_partition_once(
+        raw_results, expected_alt_title=expected_alt_title, **kwargs
+    )
+    if partitioned["primary"] or session is None or item_id is None:
+        return partitioned
+    extra = await _localized_requery(
+        session,
+        item_id=item_id,
+        expected_title=expected_title,
+        media_type=media_type,
+        season_number=expected_season,
+        episode_number=expected_episode,
+        language=effective_cfg.get("primary_language"),
+    )
+    if extra is None:
+        return partitioned
+    localized, new_raw = extra
+    seen_guids = {str(r.get("guid") or r.get("link") or "") for r in raw_results}
+    seen_titles = {str(r.get("title") or "").strip().lower() for r in raw_results}
+    merged = list(raw_results)
+    for r in new_raw:
+        guid = str(r.get("guid") or r.get("link") or "")
+        norm = str(r.get("title") or "").strip().lower()
+        if guid in seen_guids or norm in seen_titles:
+            continue
+        seen_guids.add(guid)
+        seen_titles.add(norm)
+        merged.append(r)
+    if len(merged) == len(raw_results):
+        return partitioned
+    return await _score_and_partition_once(
+        merged, expected_alt_title=localized, **kwargs
+    )
+
+
+async def _localized_requery(
+    session: AsyncSession,
+    *,
+    item_id: int,
+    expected_title: str | None,
+    media_type: str | None,
+    season_number: int | None,
+    episode_number: int | None,
+    language: str | None,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Query the indexers again with the TMDB title in ``language`` (None if not useful)."""
+    from app.services.localized_titles import get_localized_title
+
+    if not language or language.lower() == "en":
+        return None
+    try:
+        item = await session.get(MediaItem, item_id)
+        if item is None or item.tmdb_id is None or expected_title != item.title:
+            return None
+        is_movie = media_type == "movie"
+        kind = "movie" if is_movie else "series"
+        localized = await get_localized_title(
+            kind, item.tmdb_id, language, item.title, session=session
+        )
+        if not localized:
+            return None
+        if is_movie:
+            raw = await _query_movie_across_indexers(
+                session, item, title_override=localized
+            )
+        else:
+            raw = await _query_show_across_indexers(
+                session, item, season_number, episode_number, title_override=localized
+            )
+    except Exception as exc:
+        logger.debug("Localized-title fallback skipped for item %s: %s", item_id, exc)
+        return None
+    logger.debug(
+        "[SEARCH] Localized fallback '%s' returned %d candidates.", localized, len(raw)
+    )
+    return localized, raw
+
+
+async def _score_and_partition_once(
+    raw_results: list[dict[str, Any]],
+    blacklisted_guids: set[str],
+    blacklisted_titles: set[str],
+    expected_title: str | None,
+    expected_year: int | None,
+    expected_alt_title: str | None,
+    expected_season: int | None,
+    expected_episode: int | None,
+    expected_season_title: str | None,
+    runtime_minutes: int | None,
+    effective_cfg: dict[str, Any],
+    media_type: str | None = None,
+    season_episode_count: int | None = None,
+    session: AsyncSession | None = None,
+    item_id: int | None = None,
+) -> dict[str, Any]:
     """Score raw indexer results and partition them into primary, fallback, mismatched, and all_valid."""
     primary_list: list[dict[str, Any]] = []
     fallback_list: list[dict[str, Any]] = []
@@ -776,18 +887,20 @@ async def _query_show_across_indexers(
     item: MediaItem,
     season_number: int | None,
     episode_number: int | None = None,
+    title_override: str | None = None,
 ) -> list[dict[str, Any]]:
     """Query active indexers for a TV/Anime season pack or episode."""
+    search_title = title_override or item.title
     kind = "anime" if item.media_type == MediaType.ANIME else "series"
 
     ep_str = str(episode_number) if episode_number is not None else None
     search_label = (
-        f"{item.title} S{int(season_number):02d}E{int(episode_number):02d}"
+        f"{search_title} S{int(season_number):02d}E{int(episode_number):02d}"
         if season_number is not None and episode_number is not None
         else (
-            f"{item.title} S{int(season_number):02d} (Pack)"
+            f"{search_title} S{int(season_number):02d} (Pack)"
             if season_number is not None
-            else item.title
+            else search_title
         )
     )
     indexers = await get_active_indexers(session)
@@ -807,7 +920,7 @@ async def _query_show_across_indexers(
                     tvdb_id=item.tvdb_id,
                     tmdb_id=item.tmdb_id,
                     imdb_id=item.imdb_id,
-                    title=item.title,
+                    title=search_title,
                     season=season_number,
                     ep=ep_str,
                     category=cat_id,
@@ -839,7 +952,7 @@ async def _query_show_across_indexers(
             tvdb_id=item.tvdb_id,
             tmdb_id=item.tmdb_id,
             imdb_id=item.imdb_id,
-            title=item.title,
+            title=search_title,
             season=season_number,
             ep=ep_str,
             category=cat_id,
