@@ -82,3 +82,26 @@ async def test_no_requery_when_primary_candidate_exists(db_session, monkeypatch)
     result = await _score(db_session, movie, [_raw(GERMAN)])
     search.assert_not_awaited()
     assert result["all_valid"][0]["title"] == GERMAN
+
+
+async def test_ampersand_title_matches_und_release(db_session, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.tmdb.get_movie_details",
+        AsyncMock(
+            return_value={
+                "translations": {
+                    "translations": [
+                        {"iso_639_1": "de", "data": {"title": "Mein bester & ich"}}
+                    ]
+                }
+            }
+        ),
+    )
+    localized_titles.clear_localized_title_cache()
+    await make_indexer_provider(db_session)
+    movie = await make_movie(db_session, title="The Upside", tmdb_id=440472)
+    monkeypatch.setattr(
+        newznab_client, "search_movie", AsyncMock(return_value=[_raw(GERMAN)])
+    )
+    result = await _score(db_session, movie, [_raw(ENGLISH)])
+    assert result["all_valid"][0]["title"] == GERMAN

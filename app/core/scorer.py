@@ -392,8 +392,9 @@ def score_release(
     if expected_title and parsed.title:
 
         def normalize(t: str) -> str:
-            # Remove punctuation and lowercase
-            return re.sub(r"[^a-z0-9]", "", t.lower())
+            # "&" and the German/French "und"/"et" count as "and"; drop punctuation
+            t = re.sub(r"&|\b(?:und|et)\b", " and ", t.lower())
+            return re.sub(r"[^a-z0-9]", "", t)
 
         norm_expected = normalize(expected_title)
         norm_parsed = normalize(parsed.title)
