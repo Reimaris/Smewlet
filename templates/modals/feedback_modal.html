@@ -52,12 +52,12 @@
 
             <p x-show="activeTab === 'bug'" class="text-xs text-[#a1a1aa]">Copy the diagnostics table, open the bug form and paste it into the <em>Environment Diagnostics</em> field. Remove any secrets from logs.</p>
             <div x-show="activeTab === 'bug'" class="text-xs text-[#a1a1aa] space-y-1">
-                <p>Optional: If requested by maintainers, export a sanitized database to attach to your issue.
+                <p>Optional: If I ask for it, export a sanitized database to attach to your issue.
                     <a href="/system/export-sanitized-db" download id="feedback-export-sanitized-db" class="text-white underline">Export Sanitized DB</a></p>
                 <p>Review before sharing: server URLs and your library are included; keys, tokens and webhooks are removed. GitHub rejects <code>.db</code> files, so zip it before attaching.</p>
             </div>
             <p x-show="activeTab === 'feature'" x-cloak class="text-xs text-[#a1a1aa]">Describe the problem you want solved. Diagnostics are optional for feature requests.</p>
-            <p x-show="activeTab === 'question'" x-cloak class="text-xs text-[#a1a1aa]">Check the README first. Diagnostics are optional but help us answer faster.</p>
+            <p x-show="activeTab === 'question'" x-cloak class="text-xs text-[#a1a1aa]">Check the README first. Questions go to GitHub Discussions. Diagnostics are optional but help me answer faster.</p>
 
             <textarea x-ref="diagnosticsArea" x-model="diagnosticsText" readonly tabindex="-1" aria-hidden="true" class="sr-only"></textarea>
 
@@ -81,7 +81,7 @@
                 <span x-show="!copied">Copy Diagnostics Table</span>
                 <span x-show="copied" x-cloak class="text-green-400">✓ Copied to Clipboard!</span>
             </button>
-            <a :href="issueFormUrls[activeTab]" href="{{ issue_form_urls[initial_tab] }}" target="_blank" rel="noopener noreferrer" class="w-full sm:w-auto text-center bg-[#d40060] hover:bg-[#a3004a] text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-lg shadow-[#d40060]/20">Open GitHub Issue Form</a>
+            <a :href="issueFormUrls[activeTab]" href="{{ issue_form_urls[initial_tab] }}" target="_blank" rel="noopener noreferrer" class="w-full sm:w-auto text-center bg-[#d40060] hover:bg-[#a3004a] text-white px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-lg shadow-[#d40060]/20"x-text="activeTab === 'question' ? 'Open GitHub Discussions' : 'Open GitHub Issue Form'">Open GitHub Issue Form</a>
         </div>
     </div>
 </div>

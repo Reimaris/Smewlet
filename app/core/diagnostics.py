@@ -20,7 +20,7 @@ GITHUB_BUG_REPORT_URL: str = f"{GITHUB_REPO_URL}/issues/new?template=bug_report.
 GITHUB_FEATURE_REQUEST_URL: str = (
     f"{GITHUB_REPO_URL}/issues/new?template=feature_request.yml"
 )
-GITHUB_QUESTION_URL: str = f"{GITHUB_REPO_URL}/issues/new?template=question.yml"
+GITHUB_QUESTION_URL: str = f"{GITHUB_REPO_URL}/discussions/new?category=q-a"
 GITHUB_SECURITY_ADVISORY_URL: str = f"{GITHUB_REPO_URL}/security/advisories/new"
 
 PROVIDER_TYPE_LABELS: dict[str, str] = {

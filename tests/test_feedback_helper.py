@@ -132,7 +132,7 @@ def test_url_constants():
     assert (
         GITHUB_FEATURE_REQUEST_URL == f"{base}/issues/new?template=feature_request.yml"
     )
-    assert GITHUB_QUESTION_URL == f"{base}/issues/new?template=question.yml"
+    assert GITHUB_QUESTION_URL == f"{base}/discussions/new?category=q-a"
     assert GITHUB_SECURITY_ADVISORY_URL == f"{base}/security/advisories/new"
 
 
@@ -159,7 +159,6 @@ FORMS = {
         "enhancement",
         {"problem_statement", "proposed_solution", "checklist"},
     ),
-    "question.yml": ("question", {"question_summary", "context_details", "checklist"}),
 }
 
 
@@ -170,8 +169,11 @@ def _load(name):
 def test_issue_config():
     cfg = _load("config.yml")
     assert cfg["blank_issues_enabled"] is False
-    # GitHub already lists SECURITY.md in the chooser; a contact link would duplicate it.
-    assert "contact_links" not in cfg
+    # Questions live in Discussions; SECURITY.md is already listed by GitHub itself.
+    assert [c["url"] for c in cfg["contact_links"]] == [
+        "https://github.com/Reimaris/Smewlet/discussions"
+    ]
+    assert not (TEMPLATE_DIR / "question.yml").exists()
     security = (TEMPLATE_DIR.parents[1] / "SECURITY.md").read_text(encoding="utf-8")
     assert GITHUB_SECURITY_ADVISORY_URL in security
 
@@ -203,5 +205,3 @@ def test_issue_form_field_details():
     assert (
         "Export Sanitized DB" in bug["sanitized_database"]["attributes"]["description"]
     )
-    q = {f["id"]: f for f in _load("question.yml")["body"] if "id" in f}
-    assert q["question_summary"]["type"] == "input"
