@@ -79,7 +79,20 @@ def clear_abort(history_id: int) -> None:
 ProgressCallback = Callable[[int, int], Awaitable[None]]  # (bytes_done, bytes_total)
 
 
-_urlopen = urllib.request.urlopen  # test seam
+# HTTP(S) only: the default opener would also serve file:// and ftp:// (and ftp
+# redirects), which a provider-supplied link must never reach.
+_opener = urllib.request.OpenerDirector()
+for _handler in (
+    urllib.request.ProxyHandler(),
+    urllib.request.UnknownHandler(),
+    urllib.request.HTTPHandler(),
+    urllib.request.HTTPSHandler(),
+    urllib.request.HTTPDefaultErrorHandler(),
+    urllib.request.HTTPRedirectHandler(),
+    urllib.request.HTTPErrorProcessor(),
+):
+    _opener.add_handler(_handler)
+_urlopen = _opener.open  # test seam
 
 
 def _open_stream(

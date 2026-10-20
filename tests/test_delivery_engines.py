@@ -381,6 +381,13 @@ async def test_multi_chunk_download_is_ordered_and_url_is_quoted(
     assert opened == ["https://example.com/dl/my%20file.mkv?t=a"]
 
 
+@pytest.mark.parametrize("url", ["file:///etc/hostname", "ftp://example.com/x.mkv"])
+def test_only_http_links_are_opened(url: str) -> None:
+    with pytest.raises(engines._FileError) as info:
+        engines._open_stream(url)
+    assert info.value.code == "Network error: URLError"
+
+
 BIG = bytes(range(256)) * 14  # 3584 bytes -> 4 ranges of 1000
 
 
