@@ -57,9 +57,10 @@ async def test_success_clears_banner():
 
 
 @pytest.mark.asyncio
-async def test_404_is_not_an_outage():
+@pytest.mark.parametrize("status", [401, 404])
+async def test_client_errors_are_not_an_outage(status):
     with pytest.raises(httpx.HTTPStatusError):
-        await _post(404)
+        await _post(status)
     assert active_metadata_outages() == []
 
 

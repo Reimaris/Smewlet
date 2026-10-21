@@ -137,7 +137,11 @@ async def _post_with_retry(
             resp.raise_for_status()
         except httpx.HTTPStatusError:
             status_verdict = classify_http_status(resp.status_code)
-            if status_verdict:
+            # 401 is a bad user token, not an outage; AniList signals a disabled
+            # API with 403.
+            if status_verdict and (
+                status_verdict.kind == "outage" or resp.status_code == 403
+            ):
                 record_metadata_outage(ANILIST_NAME, status_verdict.label)
             raise
         clear_metadata_outage(ANILIST_NAME)
