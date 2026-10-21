@@ -162,6 +162,7 @@ async def _fetch_raw_releases(
     season: int | None,
     episode: int | None,
     title_only: frozenset[str] = frozenset(),
+    languages: tuple[str | None, ...] = (),
 ) -> tuple[list[dict[str, Any]], str | None, dict[str, str] | None]:
     """Run one Newznab search per distinct title and merge by guid/title."""
     from app.db.database import async_session_factory
@@ -190,7 +191,9 @@ async def _fetch_raw_releases(
         c_tvdb = None if ids_off else tvdb_id
         if idx is not None:
             cat_id: int | str | None = (
-                resolve_categories(idx, kind) if kind in _CATEGORY_KINDS else None
+                resolve_categories(idx, kind, languages)
+                if kind in _CATEGORY_KINDS
+                else None
             )
             idx_kwargs: dict[str, Any] = {
                 "api_url": idx.api_url,
@@ -198,7 +201,7 @@ async def _fetch_raw_releases(
             }
         else:
             cat_id = (
-                resolve_categories(Provider(config_json="{}"), kind)
+                resolve_categories(Provider(config_json="{}"), kind, languages)
                 if kind in _CATEGORY_KINDS
                 else None
             )
@@ -333,23 +336,6 @@ async def search_and_score_releases(
     else:
         title_only = frozenset()
 
-    raw_results, error_message, outage = await _fetch_raw_releases(
-        kind=kind,
-        titles=titles,
-        imdb_id=imdb_id,
-        tmdb_id=tmdb_id,
-        tvdb_id=tvdb_id,
-        season=season,
-        episode=episode,
-        title_only=title_only,
-    )
-    if error_message:
-        return AdHocSearchResult([], [], [], error_message, outage)
-
-    primary_results: list[dict[str, Any]] = []
-    fallback_results: list[dict[str, Any]] = []
-    mismatched_results: list[dict[str, Any]] = []
-
     prim_lang = (
         filters.primary_language
         if filters.primary_language not in ("any", "")
@@ -360,6 +346,24 @@ async def search_and_score_releases(
         if filters.fallback_language not in ("none", "any", "")
         else None
     )
+
+    raw_results, error_message, outage = await _fetch_raw_releases(
+        kind=kind,
+        titles=titles,
+        imdb_id=imdb_id,
+        tmdb_id=tmdb_id,
+        tvdb_id=tvdb_id,
+        season=season,
+        episode=episode,
+        title_only=title_only,
+        languages=(prim_lang, fall_lang),
+    )
+    if error_message:
+        return AdHocSearchResult([], [], [], error_message, outage)
+
+    primary_results: list[dict[str, Any]] = []
+    fallback_results: list[dict[str, Any]] = []
+    mismatched_results: list[dict[str, Any]] = []
 
     async with async_session_factory() as session:
         blacklisted_guids, blacklisted_titles = await _load_blacklisted_sets(

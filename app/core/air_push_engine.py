@@ -260,7 +260,11 @@ async def _evaluate_episode_upgrade(
         session, item.id
     )
     raw = await _query_show_across_indexers(
-        session, item, season.season_number, ep.episode_number
+        session,
+        item,
+        season.season_number,
+        ep.episode_number,
+        effective_cfg=effective_cfg,
     )
     partitioned = await _score_and_partition_candidates(
         raw_results=raw,

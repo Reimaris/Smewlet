@@ -322,3 +322,52 @@ async def test_adhoc_movie_search_adds_localized_title(
             limit=10,
         )
         assert sorted(calls) == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    "kind,config,languages,expected",
+    [
+        ("series", "{}", ("de", None), "5000,5030,5040,5045,5100,5130,5140,5145"),
+        (
+            "series",
+            "{}",
+            ("DE", "fr"),
+            "5000,5030,5040,5045,5100,5130,5140,5145,5300,5330,5340,5345",
+        ),
+        ("series", "{}", ("en", None), "5000,5030,5040,5045"),
+        ("series", "{}", (None, None), "5000,5030,5040,5045"),
+        ("series", '{"custom_tv_categories":"5040"}', ("de", None), "5040"),
+        (
+            "movie",
+            "{}",
+            ("de", None),
+            "2000,2040,2045,2050,2060,2100,2140,2145,2150,2160",
+        ),
+        ("anime", "{}", ("es", None), "5070,5270"),
+    ],
+)
+def test_resolve_categories_adds_language_categories(kind, config, languages, expected):
+    provider = Provider(config_json=config)
+    assert resolve_categories(provider, kind, languages) == expected
+
+
+async def test_show_search_uses_german_categories_for_german_preset(
+    monkeypatch, db_session, nzbgeek_indexer
+):
+    from app.core.push_engine import _query_show_across_indexers
+    from app.db.models import MediaItem
+    from app.services.indexers import newznab as newznab_client
+
+    await nzbgeek_indexer("{}")
+    calls = []
+
+    async def fake_search_show(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(newznab_client, "search_show", fake_search_show)
+    cfg = {"primary_language": "de", "fallback_language": None}
+    await _query_show_across_indexers(
+        db_session, MediaItem(title="Show"), 1, 1, effective_cfg=cfg
+    )
+    assert calls[0]["category"] == "5000,5030,5040,5045,5100,5130,5140,5145"

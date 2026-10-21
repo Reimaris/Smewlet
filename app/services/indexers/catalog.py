@@ -8,11 +8,18 @@ from typing import TYPE_CHECKING
 from app.services.indexers import normalize_indexer_type
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from app.db.models import Provider
 
 DEFAULT_MOVIE_CATEGORIES: str = "2000,2040,2045,2050,2060"
 DEFAULT_TV_CATEGORIES: str = "5000,5030,5040,5045"
 ANIME_CATEGORY_FALLBACK: str = "5070"
+
+# Indexers such as TreasureMaps list dubbed releases in language-specific root
+# categories (Movies/TV - DE = 2100/5100, ES = 2200/5200, FR = 2300/5300) that are
+# not children of 2000/5000, so each language adds its offset to the default ids.
+LANGUAGE_CATEGORY_OFFSETS: dict[str, int] = {"de": 100, "es": 200, "fr": 300}
 
 
 @dataclass(frozen=True)
@@ -146,15 +153,32 @@ def normalize_category_csv(raw: str | None, default: str) -> str | None:
     return None if normalized == _canonical_csv(default) else normalized
 
 
-def resolve_categories(provider: Provider, kind: str) -> str:
-    """Return the Newznab `cat` CSV for a search kind: movie|series|anime|anime-movie."""
+def _with_language_categories(defaults: str, languages: Iterable[str | None]) -> str:
+    """Extend a default category CSV with the language-specific ids of ``languages``."""
+    base = {int(t) for t in defaults.split(",")}
+    ids = set(base)
+    for lang in languages:
+        offset = LANGUAGE_CATEGORY_OFFSETS.get((lang or "").strip().lower())
+        if offset:
+            ids |= {i + offset for i in base}
+    return ",".join(str(i) for i in sorted(ids))
+
+
+def resolve_categories(
+    provider: Provider, kind: str, languages: Iterable[str | None] = ()
+) -> str:
+    """Return the Newznab `cat` CSV for a search kind: movie|series|anime|anime-movie.
+
+    ``languages`` (Primary/Fallback) extend the built-in defaults only; categories
+    the user configured explicitly are used as given.
+    """
     cfg = provider.indexer_config
     movie = cfg["custom_movie_categories"]
     tv = cfg["custom_tv_categories"]
     if kind == "movie":
-        return movie or DEFAULT_MOVIE_CATEGORIES
+        return movie or _with_language_categories(DEFAULT_MOVIE_CATEGORIES, languages)
     if kind == "series":
-        return tv or DEFAULT_TV_CATEGORIES
+        return tv or _with_language_categories(DEFAULT_TV_CATEGORIES, languages)
     if kind == "anime-movie":
-        return movie or ANIME_CATEGORY_FALLBACK
-    return tv or ANIME_CATEGORY_FALLBACK
+        return movie or _with_language_categories(ANIME_CATEGORY_FALLBACK, languages)
+    return tv or _with_language_categories(ANIME_CATEGORY_FALLBACK, languages)

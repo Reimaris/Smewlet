@@ -74,6 +74,7 @@ from app.db.models import (
     MediaItem,
     MediaStatus,
     MediaType,
+    Provider,
     Season,
     SeasonStatus,
 )
@@ -89,9 +90,6 @@ from app.services.downloaders.base import (
 )
 from app.services.indexers import newznab as newznab_client
 from app.services.indexers.catalog import (
-    ANIME_CATEGORY_FALLBACK,
-    DEFAULT_MOVIE_CATEGORIES,
-    DEFAULT_TV_CATEGORIES,
     resolve_categories,
 )
 from app.services.preset_service import (
@@ -818,23 +816,33 @@ def _note_search_outage(indexer_name: str, exc: BaseException) -> None:
         )
 
 
+async def _search_languages(
+    session: AsyncSession, item: MediaItem, effective_cfg: dict[str, Any] | None
+) -> tuple[str | None, str | None]:
+    """Primary and Fallback language that pick the language-specific indexer categories."""
+    cfg = effective_cfg or await resolve_effective_search_config(session, item)
+    return cfg.get("primary_language"), cfg.get("fallback_language")
+
+
 async def _query_movie_across_indexers(
     session: AsyncSession,
     item: MediaItem,
     title_override: str | None = None,
     use_external_ids: bool = True,
+    effective_cfg: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Query active indexers for a standalone movie or franchise movie entry."""
     search_title = title_override or item.title
     imdb_id = item.imdb_id if use_external_ids else None
     tmdb_id = item.tmdb_id if use_external_ids else None
 
+    languages = await _search_languages(session, item, effective_cfg)
     indexers = await get_active_indexers(session)
     all_results: list[dict[str, Any]] = []
 
     if indexers:
         for idx in indexers:
-            cat_id = resolve_categories(idx, "movie")
+            cat_id = resolve_categories(idx, "movie", languages)
             try:
                 logger.debug(
                     "[SEARCH] Searching indexer '%s' for '%s' (Categories: %s)...",
@@ -865,7 +873,7 @@ async def _query_movie_across_indexers(
                 _note_search_outage(idx.name, exc)
                 logger.warning("Indexer '%s' movie search error: %s", idx.name, exc)
     else:
-        cat_id = DEFAULT_MOVIE_CATEGORIES
+        cat_id = resolve_categories(Provider(config_json="{}"), "movie", languages)
         logger.debug(
             "[SEARCH] Searching indexer 'Default' for '%s' (Categories: %s)...",
             search_title,
@@ -894,6 +902,7 @@ async def _query_show_across_indexers(
     episode_number: int | None = None,
     title_override: str | None = None,
     use_external_ids: bool = True,
+    effective_cfg: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Query active indexers for a TV/Anime season pack or episode."""
     search_title = title_override or item.title
@@ -912,12 +921,13 @@ async def _query_show_across_indexers(
             else search_title
         )
     )
+    languages = await _search_languages(session, item, effective_cfg)
     indexers = await get_active_indexers(session)
     all_results: list[dict[str, Any]] = []
 
     if indexers:
         for idx in indexers:
-            cat_id = resolve_categories(idx, kind)
+            cat_id = resolve_categories(idx, kind, languages)
             try:
                 logger.debug(
                     "[SEARCH] Searching indexer '%s' for '%s' (Categories: %s)...",
@@ -951,7 +961,7 @@ async def _query_show_across_indexers(
                 _note_search_outage(idx.name, exc)
                 logger.warning("Indexer '%s' show search error: %s", idx.name, exc)
     else:
-        cat_id = ANIME_CATEGORY_FALLBACK if kind == "anime" else DEFAULT_TV_CATEGORIES
+        cat_id = resolve_categories(Provider(config_json="{}"), kind, languages)
         logger.debug(
             "[SEARCH] Searching indexer 'Default' for '%s' (Categories: %s)...",
             search_label,
@@ -1887,6 +1897,7 @@ async def _push_single_season_or_movie_entry(
             item,
             title_override=season.title or item.title,
             use_external_ids=False,
+            effective_cfg=effective_cfg,
         )
         partitioned = await _score_and_partition_candidates(
             raw_results=raw_results,
@@ -1993,7 +2004,11 @@ async def _push_single_season_or_movie_entry(
     # State 3: Prefer Season Pack (allow_season_packs=True, prefer_season_packs=True)
     if allow_season_packs and prefer_season_packs:
         raw_pack_results = await _query_show_across_indexers(
-            session, item, season_number=effective_s_num, episode_number=None
+            session,
+            item,
+            season_number=effective_s_num,
+            episode_number=None,
+            effective_cfg=effective_cfg,
         )
         pack_partitioned = await _score_and_partition_candidates(
             raw_results=raw_pack_results,
@@ -2055,7 +2070,11 @@ async def _push_single_season_or_movie_entry(
     # State 2: Score Decides (allow_season_packs=True, prefer_season_packs=False)
     elif allow_season_packs and not prefer_season_packs and not has_acquired_episodes:
         raw_pack_results = await _query_show_across_indexers(
-            session, item, season_number=effective_s_num, episode_number=None
+            session,
+            item,
+            season_number=effective_s_num,
+            episode_number=None,
+            effective_cfg=effective_cfg,
         )
         pack_partitioned = await _score_and_partition_candidates(
             raw_results=raw_pack_results,
@@ -2138,6 +2157,7 @@ async def _push_single_season_or_movie_entry(
                 item,
                 season_number=effective_s_num,
                 episode_number=first_ep.episode_number,
+                effective_cfg=effective_cfg,
             )
             e01_partitioned = await _score_and_partition_candidates(
                 raw_results=raw_e01_results,
@@ -2225,6 +2245,7 @@ async def _push_single_season_or_movie_entry(
                     item,
                     season_number=effective_s_num,
                     episode_number=ep.episode_number,
+                    effective_cfg=effective_cfg,
                 )
                 ep_part = await _score_and_partition_candidates(
                     raw_results=raw_ep_results,
@@ -2387,6 +2408,7 @@ async def _push_single_season_or_movie_entry(
             item,
             season_number=effective_s_num,
             episode_number=ep.episode_number,
+            effective_cfg=effective_cfg,
         )
         ep_partitioned = await _score_and_partition_candidates(
             raw_results=raw_ep_results,
@@ -2907,7 +2929,9 @@ async def execute_auto_push(
             )
             await session.commit()
         else:
-            raw_movie_results = await _query_movie_across_indexers(session, item)
+            raw_movie_results = await _query_movie_across_indexers(
+                session, item, effective_cfg=effective_cfg
+            )
             movie_partitioned = await _score_and_partition_candidates(
                 raw_results=raw_movie_results,
                 blacklisted_guids=blacklisted_guids,
@@ -3044,6 +3068,7 @@ async def execute_auto_push(
                     item,
                     season_number=parent_s.season_number,
                     episode_number=ep_obj.episode_number,
+                    effective_cfg=effective_cfg,
                 )
                 ep_partitioned = await _score_and_partition_candidates(
                     raw_results=raw_ep_results,
@@ -3210,7 +3235,9 @@ async def execute_manual_search(
     )
 
     if item.media_type == MediaType.MOVIE and not season_ids and not episode_ids:
-        raw_movie_results = await _query_movie_across_indexers(session, item)
+        raw_movie_results = await _query_movie_across_indexers(
+            session, item, effective_cfg=effective_cfg
+        )
         partitioned = await _score_and_partition_candidates(
             raw_results=raw_movie_results,
             blacklisted_guids=blacklisted_guids,
@@ -3250,6 +3277,7 @@ async def execute_manual_search(
                     item,
                     title_override=season.title or item.title,
                     use_external_ids=False,
+                    effective_cfg=effective_cfg,
                 )
                 partitioned = await _score_and_partition_candidates(
                     raw_results=raw_res,
@@ -3273,6 +3301,7 @@ async def execute_manual_search(
                     item,
                     season_number=season.season_number,
                     episode_number=None,
+                    effective_cfg=effective_cfg,
                 )
                 partitioned = await _score_and_partition_candidates(
                     raw_results=raw_res,
@@ -3335,6 +3364,7 @@ async def execute_manual_search(
                 item,
                 season_number=parent_s.season_number,
                 episode_number=ep_obj.episode_number,
+                effective_cfg=effective_cfg,
             )
             ep_part = await _score_and_partition_candidates(
                 raw_results=raw_ep_res,
