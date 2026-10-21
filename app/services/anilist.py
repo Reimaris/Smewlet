@@ -14,10 +14,13 @@ from typing import Any
 import httpx
 
 from app.config import DEFAULT_USER_AGENT
+from app.core.outage import clear_metadata_outage, record_metadata_outage
 from app.core.rate_limiter import RateLimiter
+from app.services.outage_classifier import classify_exception, classify_http_status
 
 logger = logging.getLogger(__name__)
 ANILIST_URL = "https://graphql.anilist.co"
+ANILIST_NAME = "AniList"
 _limiter = RateLimiter(0.5)
 
 
@@ -57,6 +60,9 @@ async def _post_with_retry(
                 )
                 await asyncio.sleep(wait_time)
                 continue
+            verdict = classify_exception(exc)
+            if verdict:
+                record_metadata_outage(ANILIST_NAME, verdict.label)
             raise
 
         if resp.status_code == 429:
@@ -104,7 +110,14 @@ async def _post_with_retry(
                 await asyncio.sleep(wait_time)
                 continue
 
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError:
+            status_verdict = classify_http_status(resp.status_code)
+            if status_verdict:
+                record_metadata_outage(ANILIST_NAME, status_verdict.label)
+            raise
+        clear_metadata_outage(ANILIST_NAME)
 
         # Pre-emptive sleep if remaining requests are very low
         remaining = resp.headers.get("X-RateLimit-Remaining")

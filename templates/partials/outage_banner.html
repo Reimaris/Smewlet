@@ -1,5 +1,9 @@
 {% set b = outage_banner() %}
-{% if b %}
+{% if b and b.kind == 'metadata' %}
+<div data-outage-banner="true" data-outage-kind="metadata" class="bg-red-950/90 border border-red-600/70 text-red-100 shadow-lg shadow-red-950/40 rounded-lg px-4 py-3 mb-4">
+    <div class="text-sm font-semibold">🚨 Service Outage Active: {{ b.provider_name }} returned {{ b.label }}. Watchlist sync and metadata lookups are failing until the service recovers. Downloads are not affected.</div>
+</div>
+{% elif b %}
 <div data-outage-banner="true" class="bg-red-950/90 border border-red-600/70 text-red-100 shadow-lg shadow-red-950/40 rounded-lg px-4 py-3 mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
     <div class="text-sm font-semibold">🚨 Service Outage Active: {{ b.provider_name }} returned {{ b.label }}. Pushes are paused until upstream service recovers (resuming in {{ b.remaining_minutes }}m)</div>
     <button hx-post="/api/pushes/resume-rate-limited" hx-swap="none"

@@ -136,17 +136,53 @@ def has_active_outage() -> bool:
 
 def clear_outages() -> None:
     _active.clear()
+    _metadata_outages.clear()
+
+
+METADATA_OUTAGE_TTL_SECONDS: int = 1800
+
+# Metadata providers (e.g. AniList) are informational only: they never engage
+# ``has_active_outage`` so pushes and searches keep running.
+_metadata_outages: dict[str, tuple[str, float]] = {}
+
+
+def record_metadata_outage(provider_name: str, label: str) -> None:
+    """Flag a metadata provider as down until a success clears it or the TTL lapses."""
+    _metadata_outages[provider_name] = (
+        label,
+        time.monotonic() + METADATA_OUTAGE_TTL_SECONDS,
+    )
+
+
+def clear_metadata_outage(provider_name: str) -> None:
+    _metadata_outages.pop(provider_name, None)
+
+
+def active_metadata_outages() -> list[tuple[str, str]]:
+    """``(provider_name, label)`` pairs whose TTL has not yet lapsed."""
+    now = time.monotonic()
+    return [
+        (n, label) for n, (label, until) in _metadata_outages.items() if until > now
+    ]
 
 
 def outage_banner_context() -> dict[str, Any] | None:
-    """Banner data for the longest-remaining active outage, else None."""
+    """Banner data for the longest-remaining active outage, else None.
+
+    Push-blocking outages take precedence; otherwise a metadata-provider outage
+    is reported with ``kind == "metadata"``.
+    """
     import math
 
     from app.core.rate_limit_queue import resume_time_label
 
     outages = active_outages()
     if not outages:
-        return None
+        metadata = active_metadata_outages()
+        if not metadata:
+            return None
+        name, label = metadata[0]
+        return {"provider_name": name, "label": label, "kind": "metadata"}
     o = max(outages, key=lambda x: x.remaining_seconds)
     return {
         "provider_name": o.provider_name,
