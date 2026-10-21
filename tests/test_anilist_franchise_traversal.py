@@ -382,13 +382,15 @@ async def test_fetch_media_500_exhaustion_sanitizes_mozilla_url_and_uses_edge_fa
             assert len(error_records) == 0
 
             # 2. Direct call on 11741 where root node itself fails on all retries:
-            # Logs a single-line sanitized ERROR without developer.mozilla.org boilerplate
+            # Logs a single-line sanitized message without developer.mozilla.org
+            # boilerplate; the 500s flag an AniList outage, so it is downgraded
+            # to WARNING (the outage alert replaces the per-request ERROR alert).
             records.clear()
             res_direct = await get_anime_root_and_hierarchy(11741)
             assert res_direct is None
-            error_records = [r for r in records if r.levelno >= logging.ERROR]
-            assert len(error_records) == 1
-            assert "11741" in error_records[0].getMessage()
-            assert "developer.mozilla.org" not in error_records[0].getMessage()
+            failures = [r for r in records if "11741" in r.getMessage()]
+            assert len(failures) == 1
+            assert failures[0].levelno == logging.WARNING
+            assert "developer.mozilla.org" not in failures[0].getMessage()
     finally:
         al_logger.removeHandler(handler)

@@ -14,11 +14,34 @@ from typing import Any
 import httpx
 
 from app.config import DEFAULT_USER_AGENT
-from app.core.outage import clear_metadata_outage, record_metadata_outage
+from app.core.outage import (
+    active_metadata_outages,
+    clear_metadata_outage,
+    record_metadata_outage,
+)
 from app.core.rate_limiter import RateLimiter
 from app.services.outage_classifier import classify_exception, classify_http_status
 
 logger = logging.getLogger(__name__)
+
+
+class _OutageLogFilter(logging.Filter):
+    """Downgrade ERROR to WARNING while AniList is flagged down.
+
+    The outage already alerts once (down/recovered), so per-chunk failures must
+    not also be forwarded as ERROR alerts.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.ERROR and any(
+            name == ANILIST_NAME for name, _ in active_metadata_outages()
+        ):
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
+
+
+logger.addFilter(_OutageLogFilter())
 ANILIST_URL = "https://graphql.anilist.co"
 ANILIST_NAME = "AniList"
 _limiter = RateLimiter(0.5)

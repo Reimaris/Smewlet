@@ -9,6 +9,8 @@ so every existing cooldown gate engages automatically.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -18,6 +20,8 @@ from sqlalchemy import ColumnElement, or_
 from app.services.downloaders.base import DOWNLOADER_DISPLAY_NAMES
 from app.services.downloaders.factory import downloader_classes
 from app.services.indexers import newznab
+
+logger = logging.getLogger(__name__)
 
 MAX_OUTAGE_RETRIES: int = 5
 OUTAGE_BACKOFF_SECONDS: tuple[int, ...] = (600, 1200, 1800, 1800, 1800)
@@ -144,18 +148,55 @@ METADATA_OUTAGE_TTL_SECONDS: int = 1800
 # Metadata providers (e.g. AniList) are informational only: they never engage
 # ``has_active_outage`` so pushes and searches keep running.
 _metadata_outages: dict[str, tuple[str, float]] = {}
+_alert_tasks: set[asyncio.Task[None]] = set()
+
+
+def _notify_metadata_transition(title: str, body: str) -> None:
+    """Fire-and-forget alert gated by ``notify_on_outages``; never raises."""
+
+    async def _send() -> None:
+        from app.db.database import async_session_factory
+        from app.services.notifications import dispatch_alert_message
+
+        try:
+            async with async_session_factory() as session:
+                await dispatch_alert_message(session, "notify_on_outages", title, body)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Metadata outage alert failed: %s", exc)
+
+    try:
+        task = asyncio.get_running_loop().create_task(_send())
+    except RuntimeError:  # no running loop
+        return
+    _alert_tasks.add(task)
+    task.add_done_callback(_alert_tasks.discard)
 
 
 def record_metadata_outage(provider_name: str, label: str) -> None:
-    """Flag a metadata provider as down until a success clears it or the TTL lapses."""
+    """Flag a metadata provider as down until a success clears it or the TTL lapses.
+
+    The first record after a clear sends one "down" alert; refreshes stay silent.
+    """
+    is_new = provider_name not in _metadata_outages
     _metadata_outages[provider_name] = (
         label,
         time.monotonic() + METADATA_OUTAGE_TTL_SECONDS,
     )
+    if is_new:
+        _notify_metadata_transition(
+            f"🚨 {provider_name} outage",
+            f"{provider_name} returned {label}. Watchlist sync and metadata "
+            "lookups will fail until it recovers. Downloads are not affected.",
+        )
 
 
 def clear_metadata_outage(provider_name: str) -> None:
-    _metadata_outages.pop(provider_name, None)
+    """Clear the flag; sends one "recovered" alert if a "down" alert was sent."""
+    if _metadata_outages.pop(provider_name, None) is not None:
+        _notify_metadata_transition(
+            f"✅ {provider_name} recovered",
+            f"{provider_name} is reachable again.",
+        )
 
 
 def active_metadata_outages() -> list[tuple[str, str]]:

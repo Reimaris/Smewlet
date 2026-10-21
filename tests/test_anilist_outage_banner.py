@@ -61,3 +61,38 @@ async def test_404_is_not_an_outage():
     with pytest.raises(httpx.HTTPStatusError):
         await _post(404)
     assert active_metadata_outages() == []
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "app.core.outage._notify_metadata_transition",
+        lambda title, body: sent.append(title),
+    )
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_one_down_and_one_recovered_alert(alerts):
+    for _ in range(3):
+        with pytest.raises(httpx.HTTPStatusError):
+            await _post(403)
+    assert alerts == ["🚨 AniList outage"]
+    await _post(200)
+    await _post(200)
+    assert alerts == ["🚨 AniList outage", "✅ AniList recovered"]
+
+
+@pytest.mark.asyncio
+async def test_chunk_errors_downgraded_while_outage_active(caplog):
+    with pytest.raises(httpx.HTTPStatusError):
+        await _post(403)
+    with caplog.at_level("WARNING", logger="app.services.anilist"):
+        anilist.logger.error("AniList failed for chunk %s", [1])
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
+    clear_outages()
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="app.services.anilist"):
+        anilist.logger.error("AniList failed for chunk %s", [1])
+    assert [r.levelname for r in caplog.records] == ["ERROR"]
