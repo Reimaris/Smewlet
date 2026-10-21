@@ -74,7 +74,6 @@ from app.db.models import (
     MediaItem,
     MediaStatus,
     MediaType,
-    Provider,
     Season,
     SeasonStatus,
 )
@@ -90,6 +89,7 @@ from app.services.downloaders.base import (
 )
 from app.services.indexers import newznab as newznab_client
 from app.services.indexers.catalog import (
+    default_indexer,
     resolve_categories,
 )
 from app.services.preset_service import (
@@ -873,7 +873,7 @@ async def _query_movie_across_indexers(
                 _note_search_outage(idx.name, exc)
                 logger.warning("Indexer '%s' movie search error: %s", idx.name, exc)
     else:
-        cat_id = resolve_categories(Provider(config_json="{}"), "movie", languages)
+        cat_id = resolve_categories(default_indexer(), "movie", languages)
         logger.debug(
             "[SEARCH] Searching indexer 'Default' for '%s' (Categories: %s)...",
             search_title,
@@ -961,7 +961,7 @@ async def _query_show_across_indexers(
                 _note_search_outage(idx.name, exc)
                 logger.warning("Indexer '%s' show search error: %s", idx.name, exc)
     else:
-        cat_id = resolve_categories(Provider(config_json="{}"), kind, languages)
+        cat_id = resolve_categories(default_indexer(), kind, languages)
         logger.debug(
             "[SEARCH] Searching indexer 'Default' for '%s' (Categories: %s)...",
             search_label,

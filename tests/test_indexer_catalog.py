@@ -347,18 +347,33 @@ async def test_adhoc_movie_search_adds_localized_title(
     ],
 )
 def test_resolve_categories_adds_language_categories(kind, config, languages, expected):
-    provider = Provider(config_json=config)
+    provider = Provider(type="treasuremaps", config_json=config)
     assert resolve_categories(provider, kind, languages) == expected
 
 
-async def test_show_search_uses_german_categories_for_german_preset(
-    monkeypatch, db_session, nzbgeek_indexer
+@pytest.mark.parametrize("ptype", ["nzbgeek", "newznab", "drunkenslug"])
+def test_resolve_categories_ignores_languages_for_other_indexers(ptype):
+    provider = Provider(type=ptype, config_json="{}")
+    assert resolve_categories(provider, "series", ("de", "fr")) == DEFAULT_TV_CATEGORIES
+
+
+@pytest.mark.parametrize(
+    "ptype,expected",
+    [
+        ("treasuremaps", "5000,5030,5040,5045,5100,5130,5140,5145"),
+        ("nzbgeek", "5000,5030,5040,5045"),
+    ],
+)
+async def test_show_search_german_categories_only_for_treasuremaps(
+    monkeypatch, db_session, nzbgeek_indexer, ptype, expected
 ):
     from app.core.push_engine import _query_show_across_indexers
     from app.db.models import MediaItem
     from app.services.indexers import newznab as newznab_client
 
-    await nzbgeek_indexer("{}")
+    indexer = await nzbgeek_indexer("{}")
+    indexer.type = ptype
+    await db_session.commit()
     calls = []
 
     async def fake_search_show(**kwargs):
@@ -370,4 +385,4 @@ async def test_show_search_uses_german_categories_for_german_preset(
     await _query_show_across_indexers(
         db_session, MediaItem(title="Show"), 1, 1, effective_cfg=cfg
     )
-    assert calls[0]["category"] == "5000,5030,5040,5045,5100,5130,5140,5145"
+    assert calls[0]["category"] == expected

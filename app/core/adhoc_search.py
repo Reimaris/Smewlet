@@ -42,7 +42,7 @@ from app.services.downloaders.factory import (
     get_active_downloader_client,
 )
 from app.services.indexers import newznab as newznab_client
-from app.services.indexers.catalog import resolve_categories
+from app.services.indexers.catalog import default_indexer, resolve_categories
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ async def _fetch_raw_releases(
             }
         else:
             cat_id = (
-                resolve_categories(Provider(config_json="{}"), kind, languages)
+                resolve_categories(default_indexer(), kind, languages)
                 if kind in _CATEGORY_KINDS
                 else None
             )

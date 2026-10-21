@@ -19,6 +19,7 @@ ANIME_CATEGORY_FALLBACK: str = "5070"
 # Indexers such as TreasureMaps list dubbed releases in language-specific root
 # categories (Movies/TV - DE = 2100/5100, ES = 2200/5200, FR = 2300/5300) that are
 # not children of 2000/5000, so each language adds its offset to the default ids.
+# Only presets flagged ``language_categories`` use them; other indexers keep the defaults.
 LANGUAGE_CATEGORY_OFFSETS: dict[str, int] = {"de": 100, "es": 200, "fr": 300}
 
 
@@ -31,6 +32,7 @@ class IndexerPreset:
     badge: str
     color: str
     experimental: bool = True
+    language_categories: bool = False
 
 
 INDEXER_PRESETS: tuple[IndexerPreset, ...] = (
@@ -42,6 +44,7 @@ INDEXER_PRESETS: tuple[IndexerPreset, ...] = (
         "TM",
         "blue",
         experimental=False,
+        language_categories=True,
     ),
     IndexerPreset(
         "drunkenslug",
@@ -164,17 +167,28 @@ def _with_language_categories(defaults: str, languages: Iterable[str | None]) ->
     return ",".join(str(i) for i in sorted(ids))
 
 
+def default_indexer() -> Provider:
+    """Transient provider for the built-in default indexer (no configured indexers)."""
+    from app.db.models import Provider
+
+    return Provider(type=INDEXER_PRESETS[0].type, config_json="{}")
+
+
 def resolve_categories(
     provider: Provider, kind: str, languages: Iterable[str | None] = ()
 ) -> str:
     """Return the Newznab `cat` CSV for a search kind: movie|series|anime|anime-movie.
 
-    ``languages`` (Primary/Fallback) extend the built-in defaults only; categories
+    ``languages`` (Primary/Fallback) extend the built-in defaults of indexers that
+    list dubbed releases in language-specific categories (TreasureMaps) only; categories
     the user configured explicitly are used as given.
     """
     cfg = provider.indexer_config
     movie = cfg["custom_movie_categories"]
     tv = cfg["custom_tv_categories"]
+    preset = get_preset(provider.type or "")
+    if preset is None or not preset.language_categories:
+        languages = ()
     if kind == "movie":
         return movie or _with_language_categories(DEFAULT_MOVIE_CATEGORIES, languages)
     if kind == "series":
