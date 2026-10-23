@@ -114,6 +114,8 @@ If the library storage becomes unreachable (NAS powered down, NFS/SMB export gon
 
 Smewlet checks the storage again after 1, 2, 4, 8 and 16 minutes, then every 30 minutes. As soon as it is reachable, the paused delivery resumes first and the queue continues on its own. No action is needed; *Retry Delivery* on a paused row just moves it to the end of the queue.
 
+The same applies if the storage disappears **in the middle of a copy**. If a file makes no progress for 2 minutes, Smewlet checks the library folder: unreachable means the delivery is paused as above and resumes by itself; reachable means the download link itself stopped sending, and the delivery fails with `DOWNLOAD_STALLED` (use *Retry Delivery*). Aborting a stuck delivery also returns within a few seconds.
+
 A folder that is reachable but unwritable (wrong permissions, read-only mount) is not treated as offline: that delivery fails with a readable message and the next one proceeds. Queue state is kept in memory; after a restart Smewlet probes the storage once and resumes or waits again.
 
 ## 8. Troubleshooting
@@ -124,5 +126,6 @@ A folder that is reachable but unwritable (wrong permissions, read-only mount) i
 | Read-only file system | remove `:ro` from the mount |
 | Unexpected new folder in the library | Smewlet creates missing library folders on delivery, so a typo in a path field creates a new folder instead of failing; check the four path fields |
 | Path not found | is the folder mounted into the container? |
+| `DOWNLOAD_STALLED` | the download link stopped sending data for 2 minutes while the library was reachable; use *Retry Delivery* |
 | Cannot hardlink across filesystems | SABnzbd downloads and library must share a filesystem (otherwise Smewlet moves the file) |
 | No space left on device | free space on the library volume; adjust the free-space buffer |

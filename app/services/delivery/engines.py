@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,9 @@ RANGED_MIN_BYTES = 2 * RANGE_BYTES
 REQUEST_TIMEOUT = 120.0
 PROGRESS_THROTTLE = 0.25
 PART_CLEANUP_TIMEOUT = 5.0
+DELIVERY_WRITE_STALL_SECONDS: int = 120  # no byte progress for this long = write stall
+DELIVERY_ABANDON_GRACE_SECONDS: float = 5.0  # max wait for a download thread after stop
+WATCHDOG_POLL_SECONDS: float = 1.0
 EXPIRED_STATUSES = frozenset({401, 403, 404})
 
 _abort_requested: set[int] = set()
@@ -221,6 +224,57 @@ async def _remove_part(dest: Path) -> None:
         )
 
 
+_T = TypeVar("_T")
+
+
+class _WriteStall(Exception):
+    """No byte progress for ``DELIVERY_WRITE_STALL_SECONDS`` (internal signal)."""
+
+
+def _swallow_result(fut: asyncio.Future[Any]) -> None:
+    if not fut.cancelled():
+        fut.exception()
+
+
+def _run_daemon(fn: Callable[..., _T], /, *args: Any) -> asyncio.Future[_T]:
+    """Run ``fn`` on a new daemon thread; the future resolves on the running loop.
+
+    Daemon, because a thread stuck on a dead mount cannot be cancelled and must
+    not keep the process from exiting. A result arriving after the loop closed
+    is dropped.
+    """
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[_T] = loop.create_future()
+
+    def settle(result: _T | None, error: BaseException | None) -> None:
+        if fut.done():  # cancelled meanwhile
+            return
+        if error is not None:
+            fut.set_exception(error)
+        else:
+            fut.set_result(result)  # type: ignore[arg-type]
+
+    def run() -> None:
+        result: _T | None = None
+        error: BaseException | None = None
+        try:
+            result = fn(*args)
+        except BaseException as exc:  # noqa: BLE001
+            error = exc
+        with contextlib.suppress(RuntimeError):  # loop already closed
+            loop.call_soon_threadsafe(settle, result, error)
+
+    threading.Thread(target=run, name="delivery-download", daemon=True).start()
+    return fut
+
+
+async def _wait_bounded(job: asyncio.Future[Any], grace: float) -> bool:
+    """True if ``job`` finished within ``grace`` seconds; never raises or cancels it."""
+    done, _ = await asyncio.wait({job}, timeout=grace)
+    job.add_done_callback(_swallow_result)
+    return bool(done)
+
+
 class _BaseEngine:
     async def _run(
         self,
@@ -323,6 +377,8 @@ class CloudStreamEngine(_BaseEngine):
         loop = asyncio.get_running_loop()
         stop = threading.Event()
         last_report = 0.0
+        last_done = 0
+        last_progress = time.monotonic()
         pending: concurrent.futures.Future[None] | None = None
 
         async def report(done: int) -> None:
@@ -331,8 +387,10 @@ class CloudStreamEngine(_BaseEngine):
 
         def on_bytes(done: int) -> None:
             # Runs in the writer thread: hand throttled progress to the event loop.
-            nonlocal last_report, pending
+            nonlocal last_report, last_done, last_progress, pending
             now = time.monotonic()
+            if done > last_done:
+                last_done, last_progress = done, now
             if (
                 self._progress is None
                 or now - last_report < PROGRESS_THROTTLE
@@ -342,17 +400,24 @@ class CloudStreamEngine(_BaseEngine):
             last_report = now
             pending = asyncio.run_coroutine_threadsafe(report(done), loop)
 
-        job = asyncio.ensure_future(
-            asyncio.to_thread(
-                _fetch_to_file,
-                link.url,
-                part,
-                link.size_bytes,
-                history_id,
-                stop,
-                on_bytes,
-            )
+        last_progress = time.monotonic()
+        job = _run_daemon(
+            _fetch_to_file,
+            link.url,
+            part,
+            link.size_bytes,
+            history_id,
+            stop,
+            on_bytes,
         )
+
+        async def watched() -> int:
+            while True:
+                done, _ = await asyncio.wait({job}, timeout=WATCHDOG_POLL_SECONDS)
+                if done:
+                    return job.result()
+                if time.monotonic() - last_progress > DELIVERY_WRITE_STALL_SECONDS:
+                    raise _WriteStall
 
         async def drain() -> None:
             # The session is not shared across tasks: finish progress first.
@@ -361,11 +426,22 @@ class CloudStreamEngine(_BaseEngine):
 
         try:
             try:
-                written = await asyncio.shield(job)
+                written = await watched()
+            except _WriteStall:
+                stop.set()
+                if not await _wait_bounded(job, DELIVERY_ABANDON_GRACE_SECONDS):
+                    logger.warning(
+                        "[DELIVERY] history %s write stall: abandoning download thread",
+                        history_id,
+                    )
+                with contextlib.suppress(Exception):
+                    await drain()
+                if await probe_root(root):
+                    raise _FileError("DOWNLOAD_STALLED") from None
+                raise StorageOffline(root) from None
             except asyncio.CancelledError:
                 stop.set()
-                with contextlib.suppress(BaseException):
-                    await job
+                await _wait_bounded(job, DELIVERY_ABANDON_GRACE_SECONDS)
                 with contextlib.suppress(BaseException):
                     await drain()
                 raise
@@ -484,27 +560,46 @@ def _fetch_ranged(
                     retries -= 1
                     stop.wait(RANGE_RETRY_DELAY)
 
-    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+    part.unlink(
+        missing_ok=True
+    )  # fresh inode: a late-waking abandoned thread is harmless
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
         os.ftruncate(fd, size)
         count = min(RANGE_WORKERS, len(ranges))
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=count, thread_name_prefix="delivery-range"
-        ) as pool:
-            futures = [pool.submit(worker, fd) for _ in range(count)]
+        errors: list[BaseException] = []
+        running = count
+        wake = threading.Event()
+
+        def run_worker() -> None:
+            nonlocal running
             try:
-                while True:
-                    done, pending = concurrent.futures.wait(
-                        futures,
-                        timeout=PROGRESS_THROTTLE,
-                        return_when=concurrent.futures.FIRST_EXCEPTION,
-                    )
-                    on_bytes(written)
-                    if not pending or any(f.exception() for f in done):
-                        break
+                worker(fd)
+            except BaseException as exc:  # noqa: BLE001
+                with lock:
+                    errors.append(exc)
+                wake.set()
             finally:
-                stop.set()  # lets the remaining workers wind down on failure
-        errors = [e for f in futures if (e := f.exception()) is not None]
+                with lock:
+                    running -= 1
+                    if not running:
+                        wake.set()
+
+        # Daemon threads: one stuck on a dead mount must not block process exit.
+        threads = [
+            threading.Thread(target=run_worker, name="delivery-range", daemon=True)
+            for _ in range(count)
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            while not wake.wait(PROGRESS_THROTTLE):
+                on_bytes(written)
+            on_bytes(written)
+        finally:
+            stop.set()  # lets the remaining workers wind down on failure
+            for thread in threads:
+                thread.join()
         if errors:
             raise next(
                 (e for e in errors if not isinstance(e, DeliveryAborted)), errors[0]
@@ -556,8 +651,11 @@ def _fetch_single(
     thread = threading.Thread(target=reader, name="delivery-reader", daemon=True)
     thread.start()
     written = 0
+    part.unlink(
+        missing_ok=True
+    )  # fresh inode: a late-waking abandoned thread is harmless
     try:
-        with part.open("wb") as fh:
+        with part.open("xb") as fh:
             while (item := chunks.get()) is not None:
                 if isinstance(item, BaseException):
                     raise item
