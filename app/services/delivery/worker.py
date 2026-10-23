@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, select
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,7 +59,7 @@ NOT_DELIVERABLE_DETAILS = frozenset(
 )
 PROGRESS_INTERVAL_SECONDS = 1.0
 # Pool exhaustion / SQLite lock errors are transient: retry instead of failing.
-TRANSIENT_DB_ERRORS = (PoolTimeoutError, DBAPIError)
+TRANSIENT_DB_ERRORS = (PoolTimeoutError, OperationalError)
 MAX_DB_RETRIES = 3
 DB_RETRY_DELAY_SECONDS = 5.0
 
@@ -251,7 +251,12 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
             history.delivery_status = DeliveryStatus.PENDING.value
             history.delivery_error = None
             _reset_progress(history)
-            await session.commit()
+            try:
+                await session.commit()
+            except TRANSIENT_DB_ERRORS:
+                # Pool still exhausted: the row stays 'delivering', which
+                # process_delivery accepts again, so the retry still works.
+                await session.rollback()
             await asyncio.sleep(DB_RETRY_DELAY_SECONDS)
             await enqueue_delivery(history_id)
             return
@@ -444,7 +449,8 @@ async def _after_delivered(
         and delivered
         and await run_fs(
             configured_root_of(Path(delivered[0].dest_path or ""), cfg),
-            lambda: all(Path(r.dest_path or "").is_file() for r in delivered),
+            lambda paths: all(p.is_file() for p in paths),
+            [Path(r.dest_path or "") for r in delivered],
         )
     ):
         slots = {(r.episode_id, r.season_id) for r in delivered}

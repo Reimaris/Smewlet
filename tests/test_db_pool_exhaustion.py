@@ -14,7 +14,12 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from app.core import transfer_poller as tp
 from app.db import database
 from app.services.delivery import worker
-from tests.conftest import FakeDownloaderClient, make_delivery_provider, make_history
+from tests.conftest import (
+    FakeDownloaderClient,
+    make_delivery_provider,
+    make_history,
+    make_pending_delivery,
+)
 
 
 async def test_tick_is_skipped_without_db_access_while_another_tick_runs() -> None:
@@ -57,20 +62,6 @@ def test_memory_database_keeps_static_pool() -> None:
     assert "pool_size" not in kwargs
 
 
-async def _pending(session: Any) -> Any:
-    h = await make_history(
-        session,
-        is_ad_hoc=True,
-        media_type_label="series",
-        media_title="Example Show",
-        media_year=2018,
-        deliver_enabled=True,
-        delivery_status="pending",
-    )
-    await session.commit()
-    return h
-
-
 @pytest.mark.parametrize(
     "exc",
     [
@@ -81,7 +72,7 @@ async def _pending(session: Any) -> Any:
 async def test_transient_db_error_requeues_instead_of_failing(
     exc, db_session, monkeypatch
 ) -> None:
-    h = await _pending(db_session)
+    h = await make_pending_delivery(db_session)
     monkeypatch.setattr(worker, "DB_RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(worker, "_deliver", AsyncMock(side_effect=exc))
     worker._queued_ids.clear()
@@ -97,7 +88,7 @@ async def test_transient_db_error_requeues_instead_of_failing(
 async def test_transient_db_error_fails_after_retry_budget(
     db_session, monkeypatch
 ) -> None:
-    h = await _pending(db_session)
+    h = await make_pending_delivery(db_session)
     monkeypatch.setattr(worker, "DB_RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(
         worker, "_deliver", AsyncMock(side_effect=PoolTimeoutError("pool"))
@@ -117,7 +108,7 @@ async def test_failed_progress_commit_does_not_poison_session(
     await make_delivery_provider(
         db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
     )
-    h = await _pending(db_session)
+    h = await make_pending_delivery(db_session)
     monkeypatch.setattr(worker, "PROGRESS_INTERVAL_SECONDS", 0)
     real_commit = db_session.commit
     calls = {"n": 0}
@@ -175,3 +166,30 @@ async def test_orchestrator_tick_purges_expired_dry_runs(db_session) -> None:
     await run_orchestrator_tick()
 
     assert (await db_session.execute(select(DownloadHistory))).scalars().all() == []
+
+
+async def test_requeue_survives_failing_status_commit(db_session, monkeypatch) -> None:
+    history_id = (await make_pending_delivery(db_session)).id
+    monkeypatch.setattr(worker, "DB_RETRY_DELAY_SECONDS", 0)
+    monkeypatch.setattr(
+        worker, "_deliver", AsyncMock(side_effect=PoolTimeoutError("pool"))
+    )
+    real_commit = db_session.commit
+    state = {"seen": False, "failed": False}
+
+    async def commit_fails_once() -> None:
+        # first commit is the 'delivering' marker; fail the retry-status commit
+        if state["seen"] and not state["failed"]:
+            state["failed"] = True
+            raise PoolTimeoutError("pool")
+        state["seen"] = True
+        await real_commit()
+
+    monkeypatch.setattr(db_session, "commit", commit_fails_once)
+    worker._queued_ids.clear()
+
+    await worker.process_delivery(db_session, history_id)
+
+    assert state["failed"]
+    assert worker.queued_history_ids() == [history_id]
+    worker._queued_ids.clear()

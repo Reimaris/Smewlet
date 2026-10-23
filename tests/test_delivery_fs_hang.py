@@ -12,7 +12,11 @@ import pytest
 
 from app.db.models import DeliveredFile
 from app.services.delivery import engines, offline, worker
-from tests.conftest import FakeDownloaderClient, make_delivery_provider, make_history
+from tests.conftest import (
+    FakeDownloaderClient,
+    make_delivery_provider,
+    make_pending_delivery,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -70,16 +74,7 @@ async def test_hung_mount_pauses_delivery_as_storage_offline(
     await make_delivery_provider(
         db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
     )
-    h = await make_history(
-        db_session,
-        is_ad_hoc=True,
-        media_type_label="series",
-        media_title="Example Show",
-        media_year=2018,
-        deliver_enabled=True,
-        delivery_status="pending",
-    )
-    await db_session.commit()
+    h = await make_pending_delivery(db_session)
 
     async def get(_s: Any, _t: str) -> FakeDownloaderClient:
         return FakeDownloaderClient()
@@ -105,15 +100,7 @@ async def test_recovery_marks_offline_instead_of_hanging(
     db_session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hang: threading.Event
 ) -> None:
     await make_delivery_provider(db_session, shows_path=str(tmp_path))
-    h = await make_history(
-        db_session,
-        is_ad_hoc=True,
-        media_type_label="series",
-        media_title="Example Show",
-        media_year=2018,
-        deliver_enabled=True,
-        delivery_status="delivering",
-    )
+    h = await make_pending_delivery(db_session, delivery_status="delivering")
     db_session.add(
         DeliveredFile(
             history_id=h.id,

@@ -465,6 +465,22 @@ async def make_downloader_provider(
     return provider
 
 
+async def make_pending_delivery(session, **overrides):
+    """Committed ad-hoc history row waiting in the delivery queue."""
+    fields = dict(
+        is_ad_hoc=True,
+        media_type_label="series",
+        media_title="Example Show",
+        media_year=2018,
+        deliver_enabled=True,
+        delivery_status="pending",
+    )
+    fields.update(overrides)
+    history = await make_history(session, **fields)
+    await session.commit()
+    return history
+
+
 async def make_delivery_provider(
     session: AsyncSession, **config_overrides: Any
 ) -> Provider:
