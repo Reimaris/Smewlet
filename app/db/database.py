@@ -29,6 +29,7 @@ import shutil
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -325,6 +326,35 @@ def migrate_legacy_database(db_file: Path) -> bool:
     return True
 
 
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+POOL_SIZE = 10
+POOL_MAX_OVERFLOW = 20
+# Longer than the SQLite lock wait: sessions queued behind a writer must not
+# hit a pool timeout before their own lock wait ends.
+POOL_TIMEOUT_SECONDS = 60
+
+
+def engine_kwargs(database_url: str) -> dict[str, Any]:
+    """``create_async_engine`` keyword arguments for ``database_url``."""
+    from sqlalchemy.pool import StaticPool
+
+    connect_args: dict[str, Any] = {"check_same_thread": False}
+    kwargs: dict[str, Any] = {
+        "echo": False,
+        "future": True,
+        "connect_args": connect_args,
+    }
+    if database_url.startswith("sqlite"):
+        connect_args["timeout"] = SQLITE_BUSY_TIMEOUT_MS / 1000
+    if ":memory:" in database_url or "mode=memory" in database_url:
+        kwargs["poolclass"] = StaticPool
+    else:
+        kwargs["pool_size"] = POOL_SIZE
+        kwargs["max_overflow"] = POOL_MAX_OVERFLOW
+        kwargs["pool_timeout"] = POOL_TIMEOUT_SECONDS
+    return kwargs
+
+
 async def init_db(database_url: str) -> None:
     """Initialize the async engine, create all tables, and configure WAL mode.
 
@@ -336,10 +366,7 @@ async def init_db(database_url: str) -> None:
 
     logger.info("Initializing database: %s", database_url)
 
-    from typing import Any
-
     from sqlalchemy import event
-    from sqlalchemy.pool import StaticPool
 
     if database_url.startswith("sqlite"):
         from sqlalchemy.engine import make_url
@@ -349,18 +376,7 @@ async def init_db(database_url: str) -> None:
             migrate_legacy_database(Path(db_file))
             _backup_db_before_m59(Path(db_file))
 
-    connect_args: dict[str, Any] = {"check_same_thread": False}
-    if database_url.startswith("sqlite"):
-        connect_args["timeout"] = 60.0
-
-    kwargs = {
-        "echo": False,
-        "future": True,
-        "connect_args": connect_args,
-    }
-
-    if ":memory:" in database_url or "mode=memory" in database_url:
-        kwargs["poolclass"] = StaticPool
+    kwargs = engine_kwargs(database_url)
 
     _engine = create_async_engine(database_url, **kwargs)
 
@@ -372,7 +388,7 @@ async def init_db(database_url: str) -> None:
             try:
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA synchronous=NORMAL")
-                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
                 cursor.execute("PRAGMA foreign_keys=ON")
             finally:
                 cursor.close()

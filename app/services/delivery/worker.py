@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.log_redaction import redact_text
@@ -54,6 +56,10 @@ NOT_DELIVERABLE_DETAILS = frozenset(
     {"deleted", "replaced", "canceled", "downloader_removed"}
 )
 PROGRESS_INTERVAL_SECONDS = 1.0
+# Pool exhaustion / SQLite lock errors are transient: retry instead of failing.
+TRANSIENT_DB_ERRORS = (PoolTimeoutError, DBAPIError)
+MAX_DB_RETRIES = 3
+DB_RETRY_DELAY_SECONDS = 5.0
 
 _queued_ids: list[int] = []
 _processing = False
@@ -61,6 +67,7 @@ _wake: asyncio.Event | None = None
 _idle: asyncio.Event | None = None
 _task: asyncio.Task[None] | None = None
 _refresh_folders: set[Path] = set()
+_db_retries: dict[int, int] = {}
 
 
 def _events() -> tuple[asyncio.Event, asyncio.Event]:
@@ -220,11 +227,36 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
         _reset_progress(history)
         await session.commit()
         return
+    except TRANSIENT_DB_ERRORS as exc:
+        await session.rollback()
+        attempts = _db_retries.get(history_id, 0) + 1
+        if attempts <= MAX_DB_RETRIES:
+            _db_retries[history_id] = attempts
+            logger.warning(
+                "[DELIVERY] history %s hit a transient DB error (%s), retry %s/%s",
+                history_id,
+                type(exc).__name__,
+                attempts,
+                MAX_DB_RETRIES,
+            )
+            history.delivery_status = DeliveryStatus.PENDING.value
+            history.delivery_error = None
+            _reset_progress(history)
+            await session.commit()
+            await asyncio.sleep(DB_RETRY_DELAY_SECONDS)
+            await enqueue_delivery(history_id)
+            return
+        _db_retries.pop(history_id, None)
+        logger.exception("[DELIVERY] history %s crashed", history_id)
+        history.delivery_status = DeliveryStatus.FAILED.value
+        history.delivery_error = redact_text(f"{type(exc).__name__}: {exc}")[:200]
     except Exception as exc:
         logger.exception("[DELIVERY] history %s crashed", history_id)
         await session.rollback()
         history.delivery_status = DeliveryStatus.FAILED.value
         history.delivery_error = redact_text(f"{type(exc).__name__}: {exc}")[:200]
+    else:
+        _db_retries.pop(history_id, None)
     finally:
         clear_abort(history_id)
     _reset_progress(history)
@@ -362,7 +394,15 @@ async def _deliver(session: AsyncSession, history: DownloadHistory) -> None:
             history.progress_pct = round(100.0 * done / total, 1) if total else 0.0
             history.download_speed_bytes = speed
             history.eta_seconds = int((total - done) / speed) if speed else None
-            await session.commit()
+            try:
+                await session.commit()
+            except TRANSIENT_DB_ERRORS as exc:
+                # Progress is best-effort: never poison the delivery session.
+                logger.warning(
+                    "[DELIVERY] progress commit skipped (%s)", type(exc).__name__
+                )
+                await session.rollback()
+                await session.refresh(history)
 
         engine = CloudStreamEngine(progress)
     await engine.deliver(session, history, plan, cfg)

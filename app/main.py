@@ -5485,6 +5485,7 @@ async def api_get_active_pushes(request: Request) -> Response:
     from app.core.transfer_poller import (
         count_downloading_entities,
         get_active_pushes,
+        poller_busy,
         run_transfer_poller_tick,
         transfer_poller,
     )
@@ -5496,10 +5497,12 @@ async def api_get_active_pushes(request: Request) -> Response:
 
     async with async_session_factory() as session:
         downloading_count = await count_downloading_entities(session)
-        if downloading_count > 0:
+        # Free the pooled connection before any network I/O.
+        await session.rollback()
+        if downloading_count > 0 and not poller_busy():
             try:
                 live_downloads = await downloader_class("torbox").fetch_raw_transfers(
-                    bypass_cache=False, session=session
+                    bypass_cache=False
                 )
                 await run_transfer_poller_tick(
                     session, pre_fetched_downloads=live_downloads

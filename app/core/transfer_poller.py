@@ -1031,6 +1031,20 @@ async def _dispatch_settled_show_notifications(
             )
 
 
+def poller_busy() -> bool:
+    """True while a tick runs; callers skip instead of queueing on the lock."""
+    return _poller_lock.locked()
+
+
+def _skipped_tick() -> dict[str, Any]:
+    return {
+        "polled": False,
+        "active_count": 0,
+        "remaining_active": 0,
+        "sleeping": not transfer_poller.is_awake,
+    }
+
+
 async def run_transfer_poller_tick(
     session: AsyncSession | None = None,
     pre_fetched_downloads: list[dict[str, Any]] | None = None,
@@ -1038,15 +1052,15 @@ async def run_transfer_poller_tick(
     """Execute a single tick of the Auto-Wake / Auto-Sleep Transfer Poller.
 
     Guarded by `_poller_lock` so concurrent invocations from the 8s HTMX active-pushes
-    endpoint and the 20s APScheduler job never overlap.
+    endpoint and the 20s APScheduler job never overlap. A tick that finds the lock
+    taken is skipped, not queued: waiters would each pin a pooled DB connection.
     """
+    if poller_busy():
+        return _skipped_tick()
     if await setup_blocks("transfer poller", only=("downloader",)):
-        return {
-            "polled": False,
-            "active_count": 0,
-            "remaining_active": 0,
-            "sleeping": not transfer_poller.is_awake,
-        }
+        return _skipped_tick()
+    if poller_busy():  # another tick won the lock while the guard query ran
+        return _skipped_tick()
     async with _poller_lock:
         if session is None:
             async with async_session_factory() as owned_session:
