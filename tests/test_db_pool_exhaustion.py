@@ -158,3 +158,20 @@ async def test_poll_endpoint_does_not_hang_when_tick_running(async_client) -> No
         resp = await asyncio.wait_for(async_client.post("/api/pushes/poll"), 5)
     assert resp.status_code == 200
     assert resp.json()["polled"] is False
+
+
+async def test_orchestrator_tick_purges_expired_dry_runs(db_session) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.core.automation import run_orchestrator_tick
+    from app.db.models import DownloadHistory
+
+    old = datetime.now(timezone.utc) - timedelta(hours=3)
+    await make_history(db_session, is_dry_run=True, dispatched_at=old)
+    await db_session.commit()
+
+    await run_orchestrator_tick()
+
+    assert (await db_session.execute(select(DownloadHistory))).scalars().all() == []

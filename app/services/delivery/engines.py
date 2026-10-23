@@ -38,6 +38,7 @@ from app.services.delivery.offline import (
     OFFLINE_ERRNOS,
     StorageOffline,
     probe_root,
+    run_fs,
 )
 from app.services.delivery.planner import PlannedFile
 from app.services.downloaders.base import DownloaderError, DownloadLink
@@ -195,21 +196,28 @@ def library_roots(cfg: DeliveryConfig) -> list[Path]:
     return [Path(p).resolve() for p in paths if p]
 
 
+def configured_root_of(dest: Path, cfg: DeliveryConfig) -> Path:
+    """The configured library root containing ``dest`` (its parent if none does).
+
+    Purely lexical, so it never touches the (possibly dead) mount.
+    """
+    for p in (cfg.movies_path, cfg.shows_path, cfg.anime_path, cfg.anime_movies_path):
+        if p and dest.is_relative_to(p):
+            return Path(p)
+    return dest.parent
+
+
 def library_root_of(planned: PlannedFile, cfg: DeliveryConfig) -> Path:
     """The configured root containing ``planned.dest.full`` (its parent if none does)."""
-    dest = planned.dest.full.resolve()
-    for root in library_roots(cfg):
-        if dest.is_relative_to(root):
-            return root
-    return dest.parent
+    return configured_root_of(planned.dest.full, cfg)
 
 
 async def _remove_part(dest: Path) -> None:
     """Best-effort removal of ``<dest>.part`` that cannot hang on a dead mount."""
     part = dest.with_name(dest.name + ".part")
     with contextlib.suppress(Exception):
-        await asyncio.wait_for(
-            asyncio.to_thread(part.unlink, missing_ok=True), PART_CLEANUP_TIMEOUT
+        await run_fs(
+            dest.parent, part.unlink, missing_ok=True, timeout=PART_CLEANUP_TIMEOUT
         )
 
 
@@ -300,10 +308,17 @@ class CloudStreamEngine(_BaseEngine):
     async def _stream(
         self, link: DownloadLink, dest: Path, cfg: DeliveryConfig, history_id: int
     ) -> None:
-        if _existing_target(dest, link.size_bytes):
+        root = configured_root_of(dest, cfg)
+        if await run_fs(root, _existing_target, dest, link.size_bytes):
             return
-        check_free_space(dest.parent, link.size_bytes, cfg.min_free_buffer_bytes)
-        await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+        await run_fs(
+            root,
+            check_free_space,
+            dest.parent,
+            link.size_bytes,
+            cfg.min_free_buffer_bytes,
+        )
+        await run_fs(root, dest.parent.mkdir, parents=True, exist_ok=True)
         part = dest.with_name(dest.name + ".part")
         loop = asyncio.get_running_loop()
         stop = threading.Event()
@@ -362,9 +377,9 @@ class CloudStreamEngine(_BaseEngine):
             if written != link.size_bytes:
                 raise _FileError("SIZE_MISMATCH")
             await report(written)
-            await asyncio.to_thread(os.replace, part, dest)
+            await run_fs(root, os.replace, part, dest)
         except BaseException:
-            part.unlink(missing_ok=True)
+            await _remove_part(dest)
             raise
 
 
@@ -587,26 +602,31 @@ class LocalLinkEngine(_BaseEngine):
             base = Path(map_sab_path(folder, cfg))
             rel = Path(planned.source.path or planned.source.name.replace("\\", "/"))
             src = rel if rel.is_absolute() else base / rel
-            if ".." in rel.parts or not src.is_file():
+            if ".." in rel.parts or not await run_fs(
+                configured_root_of(planned.dest.full, cfg), src.is_file
+            ):
                 raise _FileError("PATH_UNAVAILABLE")
             await self._place(src, planned.dest.full, cfg)
 
         await self._run(session, history, plan, cfg, one)
 
     async def _place(self, src: Path, dest: Path, cfg: DeliveryConfig) -> None:
-        size = src.stat().st_size
-        if _existing_target(dest, size):
+        root = configured_root_of(dest, cfg)
+        size = (await run_fs(root, src.stat)).st_size
+        if await run_fs(root, _existing_target, dest, size):
             return
-        if same_filesystem(src, dest.parent):
-            await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+        if await run_fs(root, same_filesystem, src, dest.parent):
+            await run_fs(root, dest.parent.mkdir, parents=True, exist_ok=True)
             try:
-                await asyncio.to_thread(os.link, src, dest)
+                await run_fs(root, os.link, src, dest)
                 return
             except FileExistsError:
                 raise _FileError("TARGET_EXISTS") from None
             except OSError as exc:
                 if exc.errno != errno.EXDEV:
                     raise
-        check_free_space(dest.parent, size, cfg.min_free_buffer_bytes)
-        await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+        await run_fs(
+            root, check_free_space, dest.parent, size, cfg.min_free_buffer_bytes
+        )
+        await run_fs(root, dest.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(shutil.move, str(src), str(dest))

@@ -1,9 +1,10 @@
 """Setup status: which prerequisites are still missing to run the app (m64)."""
 
 import logging
+import time
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.experimental import is_experimental
@@ -16,6 +17,11 @@ logger = logging.getLogger(__name__)
 # Background jobs honour the guard unless a test switches it off (m64).
 JOB_GUARD_ENABLED: bool = True
 _last_blocked: dict[str, tuple[str, ...]] = {}
+
+# Every request passes the setup guard: a short cache keeps polls from each
+# taking a pooled DB connection. Provider writes invalidate it immediately.
+SETUP_CACHE_TTL_SECONDS: float = 3.0
+_cache: tuple[float, "SetupStatus"] | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +68,27 @@ async def get_setup_status(session: AsyncSession) -> SetupStatus:
     return SetupStatus(tuple(missing), has_watchlist, experimental)
 
 
+def clear_setup_cache(*_args: object) -> None:
+    global _cache
+    _cache = None
+
+
+for _hook in ("after_insert", "after_update", "after_delete"):
+    event.listen(Provider, _hook, clear_setup_cache)
+
+
+async def get_cached_setup_status() -> SetupStatus:
+    """``get_setup_status`` on a fresh short-lived session, cached for a few seconds."""
+    global _cache
+    now = time.monotonic()
+    if _cache is not None and now - _cache[0] < SETUP_CACHE_TTL_SECONDS:
+        return _cache[1]
+    async with async_session_factory() as session:
+        status = await get_setup_status(session)
+    _cache = (now, status)
+    return status
+
+
 async def setup_blocks(
     job: str, *, watchlist: bool = False, only: tuple[str, ...] | None = None
 ) -> SetupStatus | None:
@@ -71,8 +98,7 @@ async def setup_blocks(
     """
     if not JOB_GUARD_ENABLED:
         return None
-    async with async_session_factory() as session:
-        status = await get_setup_status(session)
+    status = await get_cached_setup_status()
     missing = tuple(m for m in status.missing_core if only is None or m in only)
     if not status.missing_core and watchlist and not status.has_watchlist:
         missing = ("watchlist",)

@@ -568,10 +568,10 @@ async def test_delete_dry_run_endpoint(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_dashboard_page_purges_expired_and_exposes_count(
+async def test_dashboard_page_is_read_only_and_exposes_count(
     db_session: AsyncSession,
 ):
-    """Dashboard page purges expired dry-run rows and exposes dry_run_history_count."""
+    """Dashboard load leaves expired dry-run rows to the orchestrator/poller purge."""
     from datetime import datetime, timedelta, timezone
 
     now = datetime.now(timezone.utc)
@@ -600,7 +600,7 @@ async def test_dashboard_page_purges_expired_and_exposes_count(
     resp = client.get("/")
     assert resp.status_code == 200
 
-    # Expired row was purged during dashboard load
+    # Page loads never write (they contended for the SQLite write lock)
     remaining = (
         (
             await db_session.execute(
@@ -610,9 +610,7 @@ async def test_dashboard_page_purges_expired_and_exposes_count(
         .scalars()
         .all()
     )
-    assert "Expired.Sim.1-GRP" not in remaining
-    assert "Active.Sim.2-GRP" in remaining
-    assert "Real.DH.3-GRP" in remaining
+    assert remaining == ["Expired.Sim.1-GRP", "Active.Sim.2-GRP", "Real.DH.3-GRP"]
 
 
 @pytest.mark.asyncio

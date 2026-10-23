@@ -50,6 +50,7 @@ from app.core.anime_titles import (
     normalize_anime_title_language,
     search_names,
 )
+from app.core.log_files import make_file_handler
 from app.core.outage import has_active_outage, outage_banner_context
 from app.core.time_utils import format_local_datetime
 from app.db.database import (
@@ -82,10 +83,7 @@ console_handler.setFormatter(formatter)
 file_handler: TimedRotatingFileHandler | None = None
 try:
     log_dir.mkdir(parents=True, exist_ok=True)
-    file_handler = TimedRotatingFileHandler(
-        filename=log_file, when="midnight", interval=1, backupCount=5, encoding="utf-8"
-    )
-    file_handler.suffix = "%Y-%m-%d.log"
+    file_handler = make_file_handler(log_file)
     file_handler.setFormatter(formatter)
 except PermissionError:
     file_handler = None
@@ -445,7 +443,7 @@ app.state.setup_guard_enabled = True
 @app.middleware("http")
 async def setup_guard(request: Request, call_next):
     """Refuse non-open requests while core prerequisites (TMDB, indexer, downloader) are missing."""
-    from app.core.prerequisites import get_setup_status
+    from app.core.prerequisites import get_cached_setup_status
     from app.core.route_policy import classify_path
 
     if not request.app.state.setup_guard_enabled:
@@ -453,8 +451,7 @@ async def setup_guard(request: Request, call_next):
     if request.url.path.startswith("/static"):
         return await call_next(request)
 
-    async with async_session_factory() as session:
-        status = await get_setup_status(session)
+    status = await get_cached_setup_status()
     request.state.setup = status
     path_class = classify_path(request.url.path, request.method)
     if path_class == "open":
@@ -516,8 +513,6 @@ async def dashboard(request: Request, background_tasks: BackgroundTasks):
 
     from app.core.automation import (
         classify_v3_status_tier,
-        consolidate_standalone_anime_sequels,
-        deduplicate_media_items,
     )
     from app.core.prerequisites import get_setup_status
     from app.core.transfer_poller import (
@@ -535,11 +530,6 @@ async def dashboard(request: Request, background_tasks: BackgroundTasks):
     )
 
     async with async_session_factory() as session:
-        # Auto-consolidate any legacy standalone sequels and deduplicate items before rendering
-        await consolidate_standalone_anime_sequels(session)
-        if await deduplicate_media_items(session) > 0:
-            await session.commit()
-
         # Fetch items
         stmt = (
             select(MediaItem)
@@ -641,17 +631,11 @@ async def dashboard(request: Request, background_tasks: BackgroundTasks):
         anime_stats = _build_cat_stats(anime_items)
 
         from app.core.transfer_poller import (
-            autoclear_history_ledger,
             count_downloading_entities,
             get_active_pushes,
             get_push_history_ledger,
-            purge_expired_dry_run_history,
             transfer_poller,
         )
-
-        # Auto-purge expired dry-run history on page load
-        await purge_expired_dry_run_history(session)
-        await autoclear_history_ledger(session)
 
         # Card 4: Push History Ledger
         push_history_ledger = await get_push_history_ledger(session)

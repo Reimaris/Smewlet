@@ -24,6 +24,7 @@ from app.services.delivery.engines import (
     DeliveryEngine,
     LocalLinkEngine,
     clear_abort,
+    configured_root_of,
     library_roots,
     request_abort,
 )
@@ -33,6 +34,7 @@ from app.services.delivery.offline import (
     is_offline,
     mark_offline,
     probe_root,
+    run_fs,
     set_recovery_callback,
     stop_watcher,
 )
@@ -127,19 +129,26 @@ def _remove_empty_parents(path: Path, roots: list[Path]) -> None:
         parent = parent.parent
 
 
+def _delete_recorded_file(dest: Path, cfg: DeliveryConfig) -> None:
+    """Blocking: unlink ``dest`` when it sits below a library root, then tidy up."""
+    roots = _roots(cfg)
+    if dest.is_file() and any(dest.resolve().is_relative_to(r) for r in roots):
+        dest.unlink(missing_ok=True)
+        _remove_empty_parents(dest, roots)
+
+
 async def _remove_recorded_files(
     session: AsyncSession,
     rows: list[DeliveredFile],
     cfg: DeliveryConfig,
 ) -> None:
     """Delete the recorded files (and their rows); only files below a library root."""
-    roots = _roots(cfg)
     for row in rows:
-        dest = Path(row.dest_path) if row.dest_path else None
-        if dest is not None and dest.is_file():
-            if any(dest.resolve().is_relative_to(r) for r in roots):
-                dest.unlink(missing_ok=True)
-                _remove_empty_parents(dest, roots)
+        if row.dest_path:
+            dest = Path(row.dest_path)
+            await run_fs(
+                configured_root_of(dest, cfg), _delete_recorded_file, dest, cfg
+            )
         await session.delete(row)
     await session.flush()
 
@@ -433,7 +442,10 @@ async def _after_delivered(
     if (
         history.is_upgrade
         and delivered
-        and all(Path(r.dest_path or "").is_file() for r in delivered)
+        and await run_fs(
+            configured_root_of(Path(delivered[0].dest_path or ""), cfg),
+            lambda: all(Path(r.dest_path or "").is_file() for r in delivered),
+        )
     ):
         slots = {(r.episode_id, r.season_id) for r in delivered}
         await _remove_recorded_files(
@@ -561,25 +573,48 @@ async def stop_delivery_worker() -> None:
     _wake = _idle = None
 
 
+def _configured_roots(cfg: DeliveryConfig) -> list[Path]:
+    """Library roots as configured; no filesystem access."""
+    paths = (cfg.movies_path, cfg.shows_path, cfg.anime_path, cfg.anime_movies_path)
+    return [Path(p) for p in paths if p]
+
+
+def _remove_stale_part(part: Path, cfg: DeliveryConfig) -> None:
+    """Blocking: delete an interrupted ``.part`` file below a library root."""
+    if part.is_file() and any(part.resolve().is_relative_to(r) for r in _roots(cfg)):
+        part.unlink(missing_ok=True)
+
+
 async def recover_interrupted_deliveries(session: AsyncSession) -> int:
     """Startup recovery; returns the number of re-enqueued rows."""
     provider = await get_active_delivery_provider(session)
     roots: list[Path] = []
+    cfg: DeliveryConfig | None = None
     if provider is not None:
         cfg = DeliveryConfig.from_provider(provider)
-        roots = _roots(cfg)
+        roots = _configured_roots(cfg)
     unfinished = (
-        await session.execute(
-            select(DeliveredFile.dest_path).where(
-                DeliveredFile.status != "delivered",
-                DeliveredFile.dest_path.is_not(None),
+        (
+            await session.execute(
+                select(DeliveredFile.dest_path).where(
+                    DeliveredFile.status != "delivered",
+                    DeliveredFile.dest_path.is_not(None),
+                )
             )
         )
-    ).scalars()
+        .scalars()
+        .all()
+    )
     for dest in unfinished:
+        if cfg is None:
+            break
         part = Path(f"{dest}.part")
-        if part.is_file() and any(part.resolve().is_relative_to(r) for r in roots):
-            part.unlink(missing_ok=True)
+        try:
+            await run_fs(configured_root_of(part, cfg), _remove_stale_part, part, cfg)
+        except StorageOffline as exc:
+            logger.warning("[DELIVERY] storage offline during recovery: %s", exc.root)
+            await mark_offline(exc.root)
+            break
 
     rows = (
         (

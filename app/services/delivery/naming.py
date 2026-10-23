@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 from collections.abc import Mapping
@@ -190,7 +191,10 @@ def resolve_destination(
     relative = render_template(template, values)
     root_path = Path(root)
     dest = Destination(root_path, Path(relative), anilist_id)
-    if not dest.full.resolve().is_relative_to(root_path.resolve()):
+    # Lexical check: resolving would stat the library mount on the event loop.
+    if not Path(os.path.normpath(dest.full)).is_relative_to(
+        os.path.normpath(root_path)
+    ):
         raise ValueError("Resolved delivery path escapes the library root")
     return dest
 

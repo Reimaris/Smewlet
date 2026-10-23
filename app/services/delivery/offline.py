@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import functools
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from app.core.rate_limit_queue import clock_label
 
@@ -28,6 +30,8 @@ OFFLINE_ERRNOS: frozenset[int] = frozenset(
     }
 )
 PROBE_TIMEOUT_SECONDS: float = 10.0
+FS_TIMEOUT_SECONDS: float = 15.0
+FS_WORKERS: int = 8
 BACKOFF_SECONDS: tuple[int, ...] = (60, 120, 240, 480, 960, 1800)
 
 _UNWRITABLE_ERRNOS = frozenset({errno.EROFS, errno.EACCES, errno.EPERM})
@@ -40,6 +44,13 @@ class StorageOffline(Exception):
         super().__init__(f"Storage offline: {root}")
         self.root = root
 
+
+_T = TypeVar("_T")
+# Dedicated pool: calls stuck on a dead mount cannot be cancelled and must not
+# exhaust the default executor that the rest of the app shares.
+_fs_executor = ThreadPoolExecutor(
+    max_workers=FS_WORKERS, thread_name_prefix="delivery-fs"
+)
 
 _inflight: dict[Path, asyncio.Future[bool]] = {}
 _roots: list[Path] = []
@@ -65,6 +76,30 @@ def _probe_sync(root: Path) -> bool:
         # Reachable but unwritable: the delivery itself reports the readable error.
         return exc.errno not in OFFLINE_ERRNOS or isinstance(exc, PermissionError)
     return True
+
+
+async def run_fs(
+    root: Path,
+    fn: Callable[..., _T],
+    /,
+    *args: Any,
+    timeout: float | None = None,
+    **kwargs: Any,
+) -> _T:
+    """Run a blocking filesystem call off the event loop.
+
+    A call that does not return in time (hung NFS mount) raises
+    ``StorageOffline(root)`` instead of freezing the app.
+    """
+    fut = asyncio.get_running_loop().run_in_executor(
+        _fs_executor, functools.partial(fn, *args, **kwargs)
+    )
+    try:
+        return await asyncio.wait_for(
+            fut, FS_TIMEOUT_SECONDS if timeout is None else timeout
+        )
+    except TimeoutError:
+        raise StorageOffline(root) from None
 
 
 def _swallow(fut: asyncio.Future[bool]) -> None:

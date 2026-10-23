@@ -482,9 +482,13 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
 
     # 4. Purge stale Push History Ledger rows (m51, ADR-125)
     try:
-        from app.core.transfer_poller import autoclear_history_ledger
+        from app.core.transfer_poller import (
+            autoclear_history_ledger,
+            purge_expired_dry_run_history,
+        )
 
         async with async_session_factory() as session:
+            await purge_expired_dry_run_history(session)
             result = await autoclear_history_ledger(session, now=now)
         logger.info(
             "[ORCHESTRATOR] [4/5] History autoclear: %d entr%s cleared (pruned=%d, aged=%d)",
