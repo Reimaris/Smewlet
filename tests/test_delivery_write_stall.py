@@ -232,3 +232,33 @@ async def test_every_attempt_writes_a_fresh_part_file(
 
     assert part.read_bytes() == PAYLOAD
     assert part.stat().st_ino != old_inode  # unlinked first, not truncated in place
+
+
+async def test_late_progress_from_abandoned_thread_is_ignored(
+    monkeypatch, release, tmp_path: Path
+) -> None:
+    from app.services.delivery.config import DeliveryConfig
+    from app.services.downloaders.base import DownloadLink
+
+    reports: list[int] = []
+
+    async def progress(done: int, _total: int) -> None:
+        reports.append(done)
+
+    def stalled_then_late(url, part, size, hid, stop, on_bytes) -> int:
+        release.wait()
+        on_bytes(size)  # wakes after the stall was declared
+        return 0
+
+    monkeypatch.setattr(engines, "_fetch_to_file", stalled_then_late)
+    monkeypatch.setattr(engines, "probe_root", AsyncMock(return_value=False))
+    engine = engines.CloudStreamEngine(progress)
+    cfg = DeliveryConfig(shows_path=str(tmp_path), min_free_buffer_bytes=0)
+    link = DownloadLink(name="a.mkv", url="https://example.com/a", size_bytes=3000)
+
+    with pytest.raises(offline.StorageOffline):
+        await engine._stream(link, tmp_path / "a.mkv", cfg, 1)
+    release.set()
+    await asyncio.sleep(0.2)
+
+    assert reports == []

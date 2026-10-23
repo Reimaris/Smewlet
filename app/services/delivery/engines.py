@@ -378,7 +378,7 @@ class CloudStreamEngine(_BaseEngine):
         stop = threading.Event()
         last_report = 0.0
         last_done = 0
-        last_progress = time.monotonic()
+        last_progress = 0.0  # set when the download job starts
         pending: concurrent.futures.Future[None] | None = None
 
         async def report(done: int) -> None:
@@ -391,6 +391,8 @@ class CloudStreamEngine(_BaseEngine):
             now = time.monotonic()
             if done > last_done:
                 last_done, last_progress = done, now
+            if stop.is_set():  # abandoned thread waking late: the session moved on
+                return
             if (
                 self._progress is None
                 or now - last_report < PROGRESS_THROTTLE
@@ -560,9 +562,8 @@ def _fetch_ranged(
                     retries -= 1
                     stop.wait(RANGE_RETRY_DELAY)
 
-    part.unlink(
-        missing_ok=True
-    )  # fresh inode: a late-waking abandoned thread is harmless
+    # Fresh inode: a late-waking abandoned thread then only writes the deleted file.
+    part.unlink(missing_ok=True)
     fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
         os.ftruncate(fd, size)
@@ -648,12 +649,11 @@ def _fetch_single(
         finally:
             put(None)
 
+    # Fresh inode: a late-waking abandoned thread then only writes the deleted file.
+    part.unlink(missing_ok=True)
     thread = threading.Thread(target=reader, name="delivery-reader", daemon=True)
     thread.start()
     written = 0
-    part.unlink(
-        missing_ok=True
-    )  # fresh inode: a late-waking abandoned thread is harmless
     try:
         with part.open("xb") as fh:
             while (item := chunks.get()) is not None:
