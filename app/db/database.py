@@ -24,9 +24,7 @@ Usage (in background jobs / non-FastAPI contexts)::
 from __future__ import annotations
 
 import logging
-import os
 import shutil
-import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -39,7 +37,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.config import DATABASE_FILE, LEGACY_DATABASE_FILE
 from app.db.models import Base
 
 logger = logging.getLogger(__name__)
@@ -289,43 +286,6 @@ def _backup_db_before_m59(db_path: Path) -> None:
     logger.info("Backed up database before m59 migrations to %s", backup_path)
 
 
-def migrate_legacy_database(db_file: Path) -> bool:
-    """Copy ``config/nzboxer.db`` next to ``db_file`` to ``db_file`` once; return True if copied.
-
-    Only applies to the default ``smewlet.db`` name. The legacy file is never
-    modified so reverting to an older image keeps working. Any copy failure
-    raises ``RuntimeError`` so startup aborts instead of creating an empty DB.
-    """
-    if db_file.name != DATABASE_FILE or db_file.exists():
-        return False
-    legacy = db_file.with_name(LEGACY_DATABASE_FILE)
-    if not legacy.exists():
-        return False
-
-    legacy_rel = f"config/{LEGACY_DATABASE_FILE}"
-    target_rel = f"config/{DATABASE_FILE}"
-    tmp = db_file.with_name(f"{DATABASE_FILE}.migrating")
-    try:
-        tmp.unlink(missing_ok=True)
-        src = sqlite3.connect(legacy)
-        try:
-            dst = sqlite3.connect(tmp)
-            try:
-                src.backup(dst)
-            finally:
-                dst.close()
-        finally:
-            src.close()
-        os.replace(tmp, db_file)
-    except (sqlite3.Error, OSError) as exc:
-        tmp.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"Could not migrate legacy database {legacy_rel} to {target_rel}: {exc}"
-        ) from exc
-    logger.warning("Migrated legacy database %s to %s", legacy_rel, target_rel)
-    return True
-
-
 SQLITE_BUSY_TIMEOUT_MS = 30_000
 POOL_SIZE = 10
 POOL_MAX_OVERFLOW = 20
@@ -373,7 +333,6 @@ async def init_db(database_url: str) -> None:
 
         db_file = make_url(database_url).database
         if db_file and db_file != ":memory:" and "mode=memory" not in database_url:
-            migrate_legacy_database(Path(db_file))
             _backup_db_before_m59(Path(db_file))
 
     kwargs = engine_kwargs(database_url)

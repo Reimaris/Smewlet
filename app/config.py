@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 DATABASE_FILE: str = "smewlet.db"
-LEGACY_DATABASE_PATH: str = "config/nzboxer.db"
-LEGACY_DATABASE_FILE: str = LEGACY_DATABASE_PATH.rpartition("/")[2]
 DEFAULT_DATABASE_URL: str = "sqlite+aiosqlite:///./config/smewlet.db"
 DEFAULT_USER_AGENT: str = f"{APP_NAME}/{APP_VERSION} (Linux; x64)"
 

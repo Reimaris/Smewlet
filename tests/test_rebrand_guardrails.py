@@ -3,7 +3,9 @@
 from datetime import datetime
 from pathlib import Path
 
-from app.config import DEFAULT_USER_AGENT
+import pytest
+
+from app.config import DEFAULT_USER_AGENT, Settings
 from app.services.db_export import sanitized_export_filename
 from app.services.watchlists.plex import PLEX_PRODUCT
 from app.services.watchlists.simkl import SIMKL_APP_NAME
@@ -15,11 +17,10 @@ SCANNED_SUFFIXES: frozenset[str] = frozenset(
     {".py", ".html", ".js", ".css", ".svg", ".yml", ".yaml", ".json", ".toml", ".md"}
 )
 OLD_BRAND = "nzboxer"
-ALLOWLIST: tuple[str, ...] = ("config/nzboxer.db",)
 
 
 def find_violations(root: Path) -> list[str]:
-    """Return ``<relative path>:<line>`` for every non-allowlisted mention of the old brand."""
+    """Return ``<relative path>:<line>`` for every mention of the old brand."""
     hits: list[str] = []
     for directory in SCANNED_DIRS:
         base = root / directory
@@ -32,10 +33,7 @@ def find_violations(root: Path) -> list[str]:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             for number, line in enumerate(text.splitlines(), start=1):
-                lowered = line.lower()
-                for token in ALLOWLIST:
-                    lowered = lowered.replace(token, "")
-                if OLD_BRAND in lowered:
+                if OLD_BRAND in line.lower():
                     hits.append(f"{path.relative_to(root)}:{number}")
     return hits
 
@@ -61,5 +59,10 @@ def test_scanner_detects_violation(tmp_path: Path) -> None:
     (tmp_path / "app" / "x.py").write_text('x = "NZBoxer"\n')
     assert find_violations(tmp_path) == ["app/x.py:1"]
 
-    (tmp_path / "app" / "x.py").write_text("legacy = 'config/nzboxer.db'\n")
-    assert find_violations(tmp_path) == []
+
+def test_default_database_url_constant(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import DEFAULT_DATABASE_URL
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert DEFAULT_DATABASE_URL == "sqlite+aiosqlite:///./config/smewlet.db"
+    assert Settings().database_url == DEFAULT_DATABASE_URL
