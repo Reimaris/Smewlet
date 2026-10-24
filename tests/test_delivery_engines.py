@@ -360,7 +360,7 @@ async def test_http_error_status_is_recorded(
     )
 
     row = await _row(db_session)
-    assert (row.status, row.error) == ("failed", "HTTP 503")
+    assert (row.status, row.error) == ("failed", "STREAM_INTERRUPTED")
 
 
 class _ResettingStream(io.BytesIO):
@@ -373,17 +373,14 @@ class _ResettingStream(io.BytesIO):
 
 
 @pytest.mark.parametrize(
-    ("opener", "expected"),
+    "opener",
     [
-        (_raise(urllib.error.URLError("dns failure")), "Network error: URLError"),
-        (
-            lambda *_a, **_k: _ResettingStream(PAYLOAD),
-            "Network error: ConnectionResetError",
-        ),
+        _raise(urllib.error.URLError("dns failure")),
+        lambda *_a, **_k: _ResettingStream(PAYLOAD),
     ],
 )
 async def test_network_errors_are_recorded_without_leftovers(
-    opener, expected, db_session, use_client, monkeypatch, tmp_path
+    opener, db_session, use_client, monkeypatch, tmp_path
 ) -> None:
     history = await make_history(db_session, nzb_guid="g3c")
     use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=3000)]))
@@ -395,7 +392,7 @@ async def test_network_errors_are_recorded_without_leftovers(
     )
 
     row = await _row(db_session)
-    assert (row.status, row.error) == ("failed", expected)
+    assert (row.status, row.error) == ("failed", "STREAM_INTERRUPTED")
     assert "example.com" not in (row.error or "")
     assert list(tmp_path.iterdir()) == []
 
@@ -520,7 +517,7 @@ async def test_range_hard_failure_fails_file_and_removes_part(
     await _deliver_big(db_session, use_client, tmp_path, "g-rng3")
 
     row = await _row(db_session)
-    assert (row.status, row.error) == ("failed", "HTTP 503")
+    assert (row.status, row.error) == ("failed", "STREAM_INTERRUPTED")
     assert list(tmp_path.iterdir()) == []
 
 

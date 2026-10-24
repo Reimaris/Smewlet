@@ -20,6 +20,7 @@ from app.db.models import DeliveredFile, DeliveryStatus, DownloadHistory
 from app.services.delivery.config import DeliveryConfig
 from app.services.delivery.engines import (
     DOWNLOADER_UNAVAILABLE,
+    STREAM_INTERRUPTED,
     CloudStreamEngine,
     DeliveryAborted,
     DeliveryEngine,
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 PAUSE_CODES = frozenset(
     {
         DOWNLOADER_UNAVAILABLE,
+        STREAM_INTERRUPTED,
         "INSUFFICIENT_STORAGE",
         "PATH_NOT_CONFIGURED",
         "PATH_UNAVAILABLE",
@@ -65,6 +67,8 @@ TRANSIENT_DB_ERRORS = (PoolTimeoutError, OperationalError)
 MAX_DB_RETRIES = 3
 DB_RETRY_DELAY_SECONDS = 5.0
 # Rows paused by a downloader outage are retried until the provider answers.
+MAX_STREAM_PAUSES = 5  # link-fetch outages pause indefinitely; stream drops do not
+OUTAGE_CODES = (DOWNLOADER_UNAVAILABLE, STREAM_INTERRUPTED)
 DOWNLOADER_RETRY_SECONDS = 60.0
 DOWNLOADER_PROBE_WAIT_SECONDS = 30.0
 DOWNLOADER_PROBE_POLL_SECONDS = 2.0
@@ -77,6 +81,7 @@ _task: asyncio.Task[None] | None = None
 _outage_task: asyncio.Task[None] | None = None
 _refresh_folders: set[Path] = set()
 _db_retries: dict[int, int] = {}
+_stream_pauses: dict[int, int] = {}
 
 
 def _events() -> tuple[asyncio.Event, asyncio.Event]:
@@ -210,6 +215,21 @@ def _aggregate(history: DownloadHistory, rows: list[DeliveredFile]) -> None:
         history.delivered_at = datetime.now(timezone.utc)
 
 
+def _cap_stream_pauses(history: DownloadHistory) -> None:
+    """Fail a row whose stream keeps dropping; forget the count once it settles."""
+    if history.delivery_error != STREAM_INTERRUPTED:
+        if history.delivery_status != DeliveryStatus.PAUSED.value:
+            _stream_pauses.pop(history.id, None)
+        return
+    count = _stream_pauses.get(history.id, 0) + 1
+    if count >= MAX_STREAM_PAUSES:
+        _stream_pauses.pop(history.id, None)
+        history.delivery_status = DeliveryStatus.FAILED.value
+        history.delivery_error = "Network error: download kept dropping"
+    else:
+        _stream_pauses[history.id] = count
+
+
 async def process_delivery(session: AsyncSession, history_id: int) -> None:
     """Deliver one history row and settle its ``delivery_status``."""
     history = await session.get(DownloadHistory, history_id)
@@ -281,10 +301,11 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
     finally:
         clear_abort(history_id)
     _reset_progress(history)
+    _cap_stream_pauses(history)
     await session.commit()
     if history.delivery_status == DeliveryStatus.DELIVERED.value:
         await _queue_refresh(session, history)
-    elif history.delivery_error == DOWNLOADER_UNAVAILABLE:
+    elif history.delivery_error in OUTAGE_CODES:
         _ensure_outage_resume()
     await _notify(session, history)
 
@@ -549,7 +570,7 @@ async def _outage_ids(session: AsyncSession) -> list[int]:
                 select(DownloadHistory.id)
                 .where(
                     DownloadHistory.delivery_status == DeliveryStatus.PAUSED.value,
-                    DownloadHistory.delivery_error == DOWNLOADER_UNAVAILABLE,
+                    DownloadHistory.delivery_error.in_(OUTAGE_CODES),
                 )
                 .order_by(DownloadHistory.id)
             )
@@ -581,7 +602,7 @@ async def _probe_still_down(probe_id: int) -> bool:
             if history is None:
                 return False
             if history.delivery_status == DeliveryStatus.PAUSED.value:
-                return history.delivery_error == DOWNLOADER_UNAVAILABLE
+                return history.delivery_error in OUTAGE_CODES
     return False
 
 

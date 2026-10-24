@@ -852,3 +852,47 @@ async def test_downloader_outage_probe_repauses_and_keeps_waiting(
 
     assert len(attempts) == 4  # 3 probes (head row) + 1 release of the rest
     assert len(set(attempts)) == 2
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("Network error: ReadTimeout", "STREAM_INTERRUPTED"),
+        ("HTTP 502", "STREAM_INTERRUPTED"),
+        ("LINK_EXPIRED", "LINK_EXPIRED"),
+        ("HTTP 416", "HTTP 416"),
+        ("SIZE_MISMATCH", "SIZE_MISMATCH"),
+    ],
+)
+def test_only_transient_stream_errors_are_pausable(code, expected) -> None:
+    from app.services.delivery.engines import _file_error_code
+
+    assert _file_error_code(code) == expected
+    assert (expected in worker.PAUSE_CODES) == (expected == "STREAM_INTERRUPTED")
+
+
+async def test_stream_drops_pause_then_fail_after_cap(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_ensure_outage_resume", lambda: None)
+    worker._stream_pauses.clear()
+    row = await _pending(db_session, nzb_guid="g-cap")
+    for n in range(1, worker.MAX_STREAM_PAUSES):
+        row.delivery_status, row.delivery_error = "paused", "STREAM_INTERRUPTED"
+        worker._cap_stream_pauses(row)
+        assert (row.delivery_status, row.delivery_error) == (
+            "paused",
+            "STREAM_INTERRUPTED",
+        )
+        assert worker._stream_pauses[row.id] == n
+    row.delivery_status, row.delivery_error = "paused", "STREAM_INTERRUPTED"
+    worker._cap_stream_pauses(row)
+    assert row.delivery_status == "failed"
+    assert row.delivery_error.startswith("Network error")
+    assert row.id not in worker._stream_pauses
+
+
+async def test_settled_row_forgets_stream_pause_count(db_session) -> None:
+    row = await _pending(db_session, nzb_guid="g-forget")
+    worker._stream_pauses[row.id] = 3
+    row.delivery_status, row.delivery_error = "delivered", None
+    worker._cap_stream_pauses(row)
+    assert row.id not in worker._stream_pauses

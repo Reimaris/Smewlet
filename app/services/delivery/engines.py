@@ -131,6 +131,7 @@ def _open_stream(
 LINK_FETCH_ATTEMPTS = 2  # rides out blips; longer outages pause the row
 LINK_FETCH_RETRY_SECONDS = 5.0
 DOWNLOADER_UNAVAILABLE = "DOWNLOADER_UNAVAILABLE"
+STREAM_INTERRUPTED = "STREAM_INTERRUPTED"  # connection dropped / 5xx mid-download
 _OUTAGE_ERRORS = (DownloaderNetworkError, DownloaderOutageError)
 
 
@@ -159,6 +160,15 @@ class _FileError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def _file_error_code(code: str) -> str:
+    """Transient transport failures are recorded as a pausable code."""
+    if code.startswith("Network error") or (
+        code.startswith("HTTP 5") and code[5:].isdigit()
+    ):
+        return STREAM_INTERRUPTED
+    return code
 
 
 def _basename(name: str) -> str:
@@ -304,7 +314,9 @@ class _BaseEngine:
             try:
                 await one(planned)
             except _FileError as exc:
-                await _record(session, history, planned, "failed", exc.code)
+                await _record(
+                    session, history, planned, "failed", _file_error_code(exc.code)
+                )
             except InsufficientStorage:
                 await _record(
                     session, history, planned, "failed", "INSUFFICIENT_STORAGE"
