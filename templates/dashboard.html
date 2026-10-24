@@ -98,6 +98,18 @@ function initVideoDashboard() {
                 }
             });
             // Auto-Push / dry-run dispatched from the push modal: stay on the current card
+            window.addEventListener('smewlet:batch-dispatched', (ev) => {
+                const d = (ev && ev.detail) || {};
+                this.pollerAwake = true;
+                this.lastInFlightCount = Math.max(this.lastInFlightCount, 1);
+                this.showDashboardToast('Episode batch started for "' + (d.title || '') + '"');
+                this.$nextTick(() => {
+                    if (!window.htmx) return;
+                    htmx.trigger(document.body, 'refreshDashboard');
+                    const el = document.getElementById('active-pushes-container');
+                    if (el) htmx.trigger(el, 'refreshActivePushes');
+                });
+            });
             window.addEventListener('smewlet:push-dispatched', (ev) => {
                 const d = (ev && ev.detail) || {};
                 this.pollerAwake = true;

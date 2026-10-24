@@ -87,3 +87,39 @@ drawer-{{ hit.provider }}-{{ hit.ext_id }}{% if season is not none %}-s{{ season
 {% set did = drawer_id(hit, season, episode) | trim %}
 <div id="{{ did }}" x-show="searched" style="display: none;" class="px-4 pb-3"></div>
 {% endmacro %}
+
+{% macro batch_deliver_toggle(hit) %}
+{% if delivery_provider_exists %}
+<span id="batch-deliver-{{ hit.provider }}-{{ hit.ext_id }}" class="inline-flex items-center" @click.stop>
+    <input type="hidden" name="deliver" value="false">
+    <label class="inline-flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+        <input type="checkbox" name="deliver" value="true" {% if delivery_provider_active %}checked{% endif %} class="accent-[#d40060]">
+        Deliver to Library
+    </label>
+</span>
+{% endif %}
+{% endmacro %}
+
+{% macro _batch_button(hit, batch_scope, label, season=none) %}
+{% set sid = 'batch-status-' ~ hit.provider ~ '-' ~ hit.ext_id ~ ('-s' ~ season if season is not none else '') %}
+{% set vals = {
+    "batch_scope": batch_scope, "provider": hit.provider, "ext_id": hit.ext_id,
+    "kind": hit.kind, "title": hit.title,
+    "alt_titles": (hit.alt_titles or []) | join("\n"),
+    "year": hit.year or "", "imdb_id": hit.imdb_id or "",
+    "tmdb_id": hit.tmdb_id or "", "tvdb_id": hit.tvdb_id or "",
+    "anilist_id": hit.anilist_id or "", "poster_url": hit.poster_url or "",
+    "season": season if season is not none else "",
+} %}
+<span class="shrink-0 inline-flex items-center gap-2" @click.stop>
+<span id="{{ sid }}"></span>
+<button type="button"
+        hx-post="/api/search/manual/batch-push" hx-target="#{{ sid }}" hx-swap="innerHTML"
+        hx-include="#manual-search-form{% if delivery_provider_exists %}, #batch-deliver-{{ hit.provider }}-{{ hit.ext_id }}{% endif %}"
+        hx-vals='{{ vals | tojson }}'
+        class="shrink-0 px-3 py-1.5 bg-[#1e1e24] hover:bg-[#33333b] border border-[#3f3f46] rounded-md text-xs text-white">{{ label }}</button>
+</span>
+{% endmacro %}
+
+{% macro batch_season_button(hit, season) %}{{ _batch_button(hit, 'season', 'Push Season (episodes)', season) }}{% endmacro %}
+{% macro batch_all_button(hit) %}{{ _batch_button(hit, 'all', 'Push All Seasons (episodes)') }}{% endmacro %}

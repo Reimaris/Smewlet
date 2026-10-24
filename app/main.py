@@ -824,11 +824,17 @@ async def manual_search(
     tmdb_val = _opt_int(tmdb_id)
     tvdb_val = _opt_int(tvdb_id)
 
+    from app.services.delivery.hooks import delivery_toggle_context
+
+    async with async_session_factory() as _dsession:
+        delivery_ctx = await delivery_toggle_context(_dsession)
+
     def _render(hits: list[Any], error_message: str | None = None):
         return templates.TemplateResponse(
             request=request,
             name="partials/search_media_hits.html",
             context={
+                **delivery_ctx,
                 "hits": hits,
                 "error_message": error_message,
                 "category": clean_category,
@@ -918,6 +924,7 @@ async def manual_search_seasons(
 ):
     """Tier 2a: lazily load the season rows of a series/anime hit."""
     from app.services import media_search
+    from app.services.delivery.hooks import delivery_toggle_context
 
     _media_provider_or_404(provider)
     async with async_session_factory() as session:
@@ -927,10 +934,12 @@ async def manual_search_seasons(
             kind,  # type: ignore[arg-type]
             session,
         )
+        delivery_ctx = await delivery_toggle_context(session)
     return templates.TemplateResponse(
         request=request,
         name="partials/search_seasons.html",
         context={
+            **delivery_ctx,
             "seasons": seasons,
             "hit": _hit_snapshot(
                 provider,
@@ -1485,6 +1494,95 @@ async def manual_auto_push(
     if not outcome.ok:
         return _status_span(outcome.message, False, outcome.status_code)
     return _status_span(f"Pushed best: {best['title']}", True)
+
+
+@app.post("/api/search/manual/batch-push", response_class=HTMLResponse)
+async def manual_batch_push(
+    batch_scope: str = Form(...),
+    provider: str = Form(...),
+    ext_id: int = Form(...),
+    kind: str = Form(""),
+    season: str = Form(""),
+    title: str = Form(""),
+    alt_titles: str = Form(""),
+    year: str = Form(""),
+    imdb_id: str = Form(""),
+    tmdb_id: str = Form(""),
+    tvdb_id: str = Form(""),
+    anilist_id: str = Form(""),
+    poster_url: str = Form(""),
+    language: str = Form("any"),
+    primary_language: str = Form("any"),
+    fallback_language: str = Form("none"),
+    resolution: str = Form("any"),
+    source: str = Form("any"),
+    hdr: str = Form("any"),
+    video_codec: str = Form("any"),
+    audio_tier: str = Form("any"),
+    audio_channels: str = Form("any"),
+    limit: int = Form(10),
+    deliver: str = Form(""),
+):
+    """Start an episode-by-episode background push of one season or all seasons."""
+    from app.core.adhoc_batch import run_episode_batch
+    from app.core.adhoc_search import AdHocFilters
+    from app.core.transfer_poller import wake_transfer_poller
+    from app.services.delivery.hooks import parse_deliver
+
+    _media_provider_or_404(provider)
+    title = title.strip()
+    season_n = _opt_int(season)
+    if (
+        batch_scope not in ("season", "all")
+        or kind not in ("series", "anime")
+        or not title
+    ):
+        return _status_span("Invalid batch scope or missing title.", False, 400)
+    if batch_scope == "season" and season_n is None:
+        return _status_span("A season number is required.", False, 400)
+
+    titles = list(
+        dict.fromkeys(
+            [title, *(t.strip() for t in alt_titles.split("\n") if t.strip())]
+        )
+    )
+    coro = run_episode_batch(
+        provider=provider,
+        ext_id=ext_id,
+        kind=kind,
+        batch_scope=batch_scope,
+        season=season_n if batch_scope == "season" else None,
+        titles=titles,
+        year=_opt_int(year),
+        imdb_id=imdb_id or None,
+        tmdb_id=_opt_int(tmdb_id) or (ext_id if provider == "tmdb" else None),
+        tvdb_id=_opt_int(tvdb_id),
+        anilist_id=_opt_int(anilist_id) or (ext_id if provider == "anilist" else None),
+        poster_url=poster_url or None,
+        media_title=title,
+        filters=AdHocFilters(
+            primary_language=primary_language,
+            fallback_language=fallback_language,
+            language=language,
+            resolution=resolution,
+            source=source,
+            hdr=hdr,
+            video_codec=video_codec,
+            audio_tier=audio_tier,
+            audio_channels=audio_channels,
+        ),
+        limit=limit,
+        deliver=parse_deliver(deliver),
+    )
+    task = asyncio.create_task(coro)
+    _background_push_tasks.add(task)
+    task.add_done_callback(_background_push_tasks.discard)
+    wake_transfer_poller()
+    response = _status_span(f"Episode batch started: {title}", True)
+    response.headers["HX-Trigger"] = json.dumps(
+        {"smewlet:batch-dispatched": {"title": title}}
+    )
+    return response
 
 
 @app.post("/api/items/{item_id}/change-type")

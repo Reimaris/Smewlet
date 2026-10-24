@@ -1,5 +1,5 @@
 {# Tier 1 media hits (m52). Context: hits, error_message, category, query, force_title, numeric_query #}
-{% from "partials/_release_row.html" import search_button, drawer_slot %}
+{% from "partials/_release_row.html" import search_button, drawer_slot, batch_all_button, batch_deliver_toggle %}
 {% if error_message %}
 <div class="p-4 bg-red-900/20 border border-red-500/30 rounded-xl text-sm text-red-300">{{ error_message }}</div>
 {% endif %}
@@ -46,6 +46,7 @@
             {% if hit.overview %}<p class="text-xs text-[#a1a1aa] mt-1 line-clamp-2">{{ hit.overview }}</p>{% endif %}
         </div>
         <div class="shrink-0 flex items-center gap-2">
+        {% if has_seasons %}{{ batch_deliver_toggle(hit) }}{{ batch_all_button(hit) }}{% endif %}
         {{ search_button(hit, 'item') }}
         {% if has_seasons %}
         <button type="button"

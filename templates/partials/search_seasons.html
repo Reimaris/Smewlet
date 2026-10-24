@@ -1,5 +1,5 @@
 {# Tier 2a season rows (m52). Context: seasons, hit, error_message #}
-{% from "partials/_release_row.html" import search_button, drawer_slot %}
+{% from "partials/_release_row.html" import search_button, drawer_slot, batch_season_button %}
 {% if error_message %}
 <div class="p-3 text-xs text-red-300">{{ error_message }}</div>
 {% elif not seasons %}
@@ -16,6 +16,7 @@
             <span class="text-xs text-[#a1a1aa] ml-2">{{ season.episode_count }} episode{{ '' if season.episode_count == 1 else 's' }}{% if season.air_year %} · {{ season.air_year }}{% endif %}</span>
         </div>
         <div class="shrink-0 flex items-center gap-2">
+        {{ batch_season_button(hit, season.season_number) }}
         {{ search_button(hit, 'season', season.season_number) }}
         <button type="button"
                 class="shrink-0 px-3 py-1 bg-[#1e1e24] hover:bg-[#33333b] border border-[#3f3f46] rounded-md text-xs text-white">
