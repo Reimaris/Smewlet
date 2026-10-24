@@ -25,6 +25,7 @@ from typing import Any, Protocol, TypeVar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import DEFAULT_USER_AGENT
 from app.core.log_redaction import redact_text
 from app.db.models import DeliveredFile, DownloadHistory
 from app.services.delivery.config import DeliveryConfig
@@ -119,7 +120,8 @@ def _open_stream(
     roughly doubles that.
     """
     safe = urllib.parse.quote(url, safe="%/:=&?~#+!$,;'@()*[]")
-    request = urllib.request.Request(safe)
+    # TorBox's Cloudflare CDN rejects urllib's default agent (error 1010).
+    request = urllib.request.Request(safe, headers={"User-Agent": DEFAULT_USER_AGENT})
     if start is not None:
         request.add_header("Range", f"bytes={start}-{end}")
     try:

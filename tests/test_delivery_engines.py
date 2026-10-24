@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import DEFAULT_USER_AGENT
 from app.core.log_redaction import redact_text
 from app.db.models import DeliveredFile, Provider
 from app.services.delivery import engines
@@ -795,3 +796,18 @@ async def test_missing_link_logs_offered_names(
     assert (row.status, row.error) == ("failed", "LINK_EXPIRED")
     assert "no download link for 'ep.mkv'" in caplog.text
     assert "other.mkv" in caplog.text
+
+
+def test_downloads_send_the_app_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    base = fake_urlopen()
+
+    def opener(request: Any, timeout: float | None = None) -> Any:
+        seen.append(request)
+        return base(request, timeout)
+
+    monkeypatch.setattr(engines, "_urlopen", opener)
+
+    engines._open_stream(URL).close()
+
+    assert seen[0].get_header("User-agent") == DEFAULT_USER_AGENT
