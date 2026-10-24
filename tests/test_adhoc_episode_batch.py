@@ -173,7 +173,9 @@ async def test_batch_continues_on_no_release_and_skips_in_flight(
 
 
 async def test_batch_aborts_on_hard_failure(batch_env: dict) -> None:
-    batch_env["push_outcome"] = AdHocPushOutcome(False, "Invalid API key", 401)
+    batch_env["push_outcome"] = AdHocPushOutcome(
+        False, "Invalid API key", 401, hard_failure=True
+    )
     summary = await _run()
     assert summary.aborted_reason == "Invalid API key"
     assert len(batch_env["searches"]) == 1
@@ -239,3 +241,10 @@ async def test_season_rows_have_batch_button(
     )
     assert "Push Season (episodes)" in resp.text
     assert "batch_scope" in resp.text
+
+
+async def test_batch_continues_after_per_release_failure(batch_env: dict) -> None:
+    batch_env["push_outcome"] = AdHocPushOutcome(False, "NZB Download Error: dead", 400)
+    summary = await _run()
+    assert summary.aborted_reason is None
+    assert summary.no_release == ["S01E01", "S01E02", "S02E01"]

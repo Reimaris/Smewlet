@@ -26,8 +26,6 @@ from app.services.media_search import EpisodeSummary, list_episodes, list_season
 
 logger = logging.getLogger(__name__)
 
-_HARD_FAILURE_CODES = frozenset({400, 401, 403})
-
 
 @dataclass
 class BatchSummary:
@@ -249,7 +247,7 @@ async def _push_one(
     if outcome.ok:
         summary.pushed.append(label)
         return False
-    if outcome.status_code in _HARD_FAILURE_CODES:
+    if outcome.hard_failure:
         summary.aborted_reason = outcome.message
         return True
     summary.no_release.append(label)

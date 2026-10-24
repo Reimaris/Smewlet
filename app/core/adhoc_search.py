@@ -527,6 +527,7 @@ class AdHocPushOutcome:
     message: str
     status_code: int = 200
     history: DownloadHistory | None = None
+    hard_failure: bool = False  # downloader-level failure; a batch must stop
 
 
 def _target_label(season: int | None, episode: int | None) -> str | None:
@@ -669,7 +670,9 @@ async def push_adhoc_release(
     if has_active_outage():
         return await _queue_adhoc_outage(session, **queue_kwargs)  # type: ignore[arg-type]
     if get_downloader_cooldown_remaining() > 0:
-        return AdHocPushOutcome(False, downloader_rate_limit_detail(), 400)
+        return AdHocPushOutcome(
+            False, downloader_rate_limit_detail(), 400, hard_failure=True
+        )
 
     result: dict[str, Any] | None = None
     downloader_type = "torbox"
@@ -743,10 +746,10 @@ async def push_adhoc_release(
         except newznab_client.IndexerError as exc:
             return AdHocPushOutcome(False, f"NZB Download Error: {exc}", 400)
         except DownloaderError as exc:
-            return AdHocPushOutcome(False, str(exc), 400)
+            return AdHocPushOutcome(False, str(exc), 400, hard_failure=True)
         if not result or not (result.get("hash") or result.get("id")):
             err = (result or {}).get("error") or "Failed to send"
-            return AdHocPushOutcome(False, str(err), 400)
+            return AdHocPushOutcome(False, str(err), 400, hard_failure=True)
 
     parsed = parse_release_name(nzb_title)
     now_utc = datetime.now(timezone.utc)
