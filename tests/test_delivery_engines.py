@@ -302,7 +302,7 @@ async def test_size_mismatch_removes_part(
 
 @pytest.mark.parametrize("status", [401, 403, 404])
 async def test_expired_link(
-    status, db_session, use_client, monkeypatch, tmp_path
+    status, db_session, use_client, monkeypatch, tmp_path, caplog
 ) -> None:
     history = await make_history(db_session, nzb_guid="g3")
     use_client(_FakeClient([DownloadLink(name="ep.mkv", url=URL, size_bytes=3000)]))
@@ -314,6 +314,7 @@ async def test_expired_link(
 
     row = await _row(db_session)
     assert (row.status, row.error) == ("failed", "LINK_EXPIRED")
+    assert f"HTTP {status} from example.com" in caplog.text
     assert not (tmp_path / "ep.mkv.part").exists()
 
 
@@ -778,3 +779,19 @@ async def test_erofs_does_not_probe(
         db_session, use_client, monkeypatch, tmp_path, errno.EROFS, False
     )
     assert (await _row(db_session)).status == "failed"
+
+
+async def test_missing_link_logs_offered_names(
+    db_session, use_client, tmp_path, caplog
+) -> None:
+    history = await make_history(db_session, nzb_guid="g-nolink")
+    use_client(_FakeClient([DownloadLink(name="other.mkv", url=URL, size_bytes=1)]))
+
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("ep.mkv", tmp_path / "ep.mkv")], CFG
+    )
+
+    row = await _row(db_session)
+    assert (row.status, row.error) == ("failed", "LINK_EXPIRED")
+    assert "no download link for 'ep.mkv'" in caplog.text
+    assert "other.mkv" in caplog.text

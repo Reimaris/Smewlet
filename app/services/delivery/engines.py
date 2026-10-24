@@ -127,6 +127,11 @@ def _open_stream(
     except urllib.error.HTTPError as exc:
         exc.close()
         if exc.code in EXPIRED_STATUSES:
+            logger.warning(
+                "[DELIVERY] download link rejected: HTTP %s from %s",
+                exc.code,
+                urllib.parse.urlsplit(url).hostname,
+            )
             raise _FileError("LINK_EXPIRED") from None
         raise _FileError(f"HTTP {exc.code}") from None
     except (OSError, http.client.HTTPException) as exc:
@@ -390,6 +395,12 @@ class CloudStreamEngine(_BaseEngine):
                 _basename(planned.source.name)
             )
             if link is None:
+                logger.warning(
+                    "[DELIVERY] history %s: no download link for %r (links offered: %s)",
+                    history.id,
+                    planned.source.name,
+                    sorted(links)[:10],
+                )
                 raise _FileError("LINK_EXPIRED")
             await self._stream(link, planned.dest.full, cfg, history.id)
 
