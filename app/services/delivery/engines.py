@@ -120,7 +120,7 @@ def _open_stream(
     roughly doubles that.
     """
     safe = urllib.parse.quote(url, safe="%/:=&?~#+!$,;'@()*[]")
-    # TorBox's Cloudflare CDN rejects urllib's default agent (error 1010).
+    # Some cloud CDNs (Cloudflare error 1010) reject urllib's default agent.
     request = urllib.request.Request(safe, headers={"User-Agent": DEFAULT_USER_AGENT})
     if start is not None:
         request.add_header("Range", f"bytes={start}-{end}")
