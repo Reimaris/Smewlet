@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import func, select
 
-from app.core.outage import active_outages, clear_outages, queued_detail_clause
+from app.core.outage import (
+    active_outages,
+    clear_outages,
+    is_queued_detail,
+    queued_detail_clause,
+)
 from app.core.prerequisites import setup_blocks
 from app.db.models import DownloadHistory, MediaItem
 from app.services.discord import EVENT_HEADERS
@@ -310,6 +315,78 @@ async def count_rate_limited_pushes(session: AsyncSession) -> int:
     ).scalar() or 0
 
 
+async def _resume_adhoc_pushes(history_ids: list[int]) -> int:
+    """Re-push queued detached ad-hoc rows (FIFO) from their stored release link.
+
+    A successful push writes a fresh row, so the parked row is deleted; a push that
+    is parked again by a new outage keeps only the new parked row. A hard failure
+    turns the parked row into a ``failed:`` ledger entry.
+    """
+    from app.core.adhoc_search import parse_target_label, push_adhoc_release
+    from app.db.database import async_session_factory
+
+    resumed = 0
+    for history_id in history_ids:
+        if (
+            max(
+                get_downloader_cooldown_remaining(),
+                newznab_client.get_all_indexer_cooldowns_remaining(),
+            )
+            > 0
+        ):
+            break
+        try:
+            async with async_session_factory() as session:
+                row = await session.get(DownloadHistory, history_id)
+                if (
+                    row is None
+                    or row.is_dismissed
+                    or not is_queued_detail(row.status_detail)
+                ):
+                    continue
+                if not row.release_link:
+                    row.status_detail = "failed: queued release link missing"
+                    await session.commit()
+                    continue
+                season, episode = parse_target_label(row.target_label)
+                logger.info(
+                    "▶️ Resuming queued ad-hoc push '%s' (%s).",
+                    row.nzb_title,
+                    row.target_label,
+                )
+                outcome = await push_adhoc_release(
+                    session,
+                    release_link=row.release_link,
+                    nzb_title=row.nzb_title,
+                    nzb_guid=row.nzb_guid,
+                    score=row.score,
+                    size_bytes=row.size_bytes,
+                    is_fallback=row.is_fallback,
+                    matched_language=row.grabbed_language,
+                    media_title=row.media_title,
+                    media_year=row.media_year,
+                    media_kind=row.media_type_label,
+                    poster_url=row.poster_url,
+                    tmdb_id=row.tmdb_id,
+                    imdb_id=row.imdb_id,
+                    anilist_id=row.anilist_id,
+                    season=season,
+                    episode=episode,
+                    deliver=row.deliver_enabled,
+                )
+                if outcome.ok:
+                    await session.delete(row)
+                    resumed += 0 if outcome.queued else 1
+                else:
+                    row.status_detail = f"failed: {outcome.message}"[:200]
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Resuming queued ad-hoc push #%s failed: %s", history_id, exc
+            )
+    return resumed
+
+
 async def resume_rate_limited_pushes() -> int:
     """Re-run Auto-Push Best for queued targets (FIFO) once provider cooldowns are over.
 
@@ -333,7 +410,6 @@ async def resume_rate_limited_pushes() -> int:
                     .where(
                         queued_detail_clause(DownloadHistory.status_detail),
                         DownloadHistory.is_dismissed.is_(False),
-                        DownloadHistory.media_item_id.is_not(None),
                     )
                     .order_by(DownloadHistory.id)
                 )
@@ -341,8 +417,10 @@ async def resume_rate_limited_pushes() -> int:
             .scalars()
             .all()
         )
+    adhoc_ids = [h.id for h in rows if h.media_item_id is None and h.is_ad_hoc]
+    rows = [h for h in rows if h.media_item_id is not None]
 
-    if not rows:
+    if not rows and not adhoc_ids:
         rate_limit_episode.reset()
         outage_episode.reset()
         rate_limit_queue.sleep()
@@ -350,13 +428,13 @@ async def resume_rate_limited_pushes() -> int:
 
     logger.debug(
         "[QUEUE] Resume check: %d queued pushes. Downloader cooldown: %ds, Indexer cooldown: %ds.",
-        len(rows),
+        len(rows) + len(adhoc_ids),
         int(tb_rem),
         int(idx_rem),
     )
 
-    await rate_limit_episode.on_resume(len(rows))
-    await outage_episode.on_resume(len(rows))
+    await rate_limit_episode.on_resume(len(rows) + len(adhoc_ids))
+    await outage_episode.on_resume(len(rows) + len(adhoc_ids))
 
     # Preserve FIFO order of queued rows (manual picks keep their chosen release;
     # auto-push targets are grouped per item).
@@ -449,6 +527,8 @@ async def resume_rate_limited_pushes() -> int:
         finally:
             transfer_poller.unregister_in_flight_push(item_id)
             item_lock_manager.release(item_id)
+
+    resumed += await _resume_adhoc_pushes(adhoc_ids)
 
     async with async_session_factory() as session:
         if await count_rate_limited_pushes(session) == 0:

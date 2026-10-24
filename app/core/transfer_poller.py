@@ -3747,6 +3747,10 @@ async def get_push_history_ledger(session: AsyncSession) -> list[dict[str, Any]]
                 if ":" in detail_raw
                 else detail_raw
             )
+        elif is_queued_detail(h.status_detail):
+            downloader_status = "PAUSED"
+            status_key = "paused"
+            failure_reason = None
         else:
             downloader_status = "READY"
             status_key = "completed"

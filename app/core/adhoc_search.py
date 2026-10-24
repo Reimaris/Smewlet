@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -28,7 +29,10 @@ from app.core.rate_limit_queue import (
     active_rate_limit_sources,
     downloader_rate_limit_detail,
     get_downloader_cooldown_remaining,
+    outage_episode,
+    rate_limit_queue,
     rate_limit_source_label,
+    resume_time_label,
 )
 from app.db.models import DownloadHistory, Provider
 from app.services import provider_service
@@ -528,6 +532,7 @@ class AdHocPushOutcome:
     status_code: int = 200
     history: DownloadHistory | None = None
     hard_failure: bool = False  # downloader-level failure; a batch must stop
+    queued: bool = False  # parked as a ``paused:`` row until the provider recovers
 
 
 def _target_label(season: int | None, episode: int | None) -> str | None:
@@ -539,6 +544,23 @@ def _target_label(season: int | None, episode: int | None) -> str | None:
     if season is not None:
         return f"Season {season} Pack"
     return None
+
+
+_TARGET_LABEL_RE = re.compile(
+    r"S(?P<s>\d+)E(?P<e>\d+)|E(?P<eo>\d+)|Season (?P<so>\d+) Pack"
+)
+
+
+def parse_target_label(label: str | None) -> tuple[int | None, int | None]:
+    """Inverse of ``_target_label``: (season, episode) from a stored label."""
+    m = _TARGET_LABEL_RE.fullmatch(label or "")
+    if m is None:
+        return None, None
+    if m["s"]:
+        return int(m["s"]), int(m["e"])
+    if m["eo"]:
+        return None, int(m["eo"])
+    return int(m["so"]), None
 
 
 async def _queue_adhoc_outage(
@@ -560,6 +582,7 @@ async def _queue_adhoc_outage(
     anilist_id: int | None,
     season: int | None,
     episode: int | None,
+    deliver: bool | None = None,
 ) -> AdHocPushOutcome:
     """Record a ``paused:`` ad-hoc row while a provider outage is active (ADR-159)."""
     outage = active_outages()[0]
@@ -579,6 +602,7 @@ async def _queue_adhoc_outage(
             anilist_id=anilist_id,
             nzb_title=nzb_title,
             nzb_guid=nzb_guid,
+            release_link=release_link,
             score=score,
             size_bytes=size_bytes,
             resolution=parsed.resolution if parsed else None,
@@ -588,6 +612,7 @@ async def _queue_adhoc_outage(
             release_group=parsed.release_group if parsed else None,
             is_fallback=is_fallback,
             grabbed_language=matched_language or None,
+            deliver_enabled=await resolve_deliver_enabled(session, deliver),
             status_detail=paused_detail(outage.kind, outage.label),
             outage_attempts=outage.attempt,
             is_dismissed=False,
@@ -596,11 +621,21 @@ async def _queue_adhoc_outage(
         )
     )
     await session.commit()
+    rate_limit_queue.wake()
+    outage_episode.on_enqueue()
     label = rate_limit_source_label(active_rate_limit_sources())
+    logger.info(
+        "⏸️ Queued ad-hoc push '%s' (%s) until %s recovers (%s).",
+        nzb_title,
+        _target_label(season, episode) or media_kind or "release",
+        label,
+        resume_time_label(),
+    )
     return AdHocPushOutcome(
         True,
         f"Push queued — will start automatically once {label} recovers.",
         200,
+        queued=True,
     )
 
 
@@ -650,6 +685,7 @@ async def push_adhoc_release(
             )
 
     queue_kwargs = dict(
+        deliver=deliver,
         release_link=release_link,
         nzb_title=nzb_title,
         nzb_guid=nzb_guid,

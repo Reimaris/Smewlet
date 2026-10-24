@@ -106,3 +106,19 @@ async def test_settings_card_avatar_matches_downloader(
         re.DOTALL,
     )
     assert match and match.group(1) == badge
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "detail", ["rate_limited", "paused: downloader outage (HTTP 500)"]
+)
+async def test_queued_row_is_not_shown_as_ready(
+    db_session: AsyncSession, detail: str
+) -> None:
+    movie = await make_movie(db_session, status=MediaStatus.RATE_LIMITED)
+    await make_history(db_session, item=movie, status_detail=detail, is_dismissed=False)
+    await db_session.commit()
+    (ledger,) = await get_push_history_ledger(db_session)
+    assert ledger["status_key"] == "paused"
+    assert ledger["downloader_status"] == "PAUSED"
+    assert not ledger["can_delete_transfer"]

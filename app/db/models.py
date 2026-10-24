@@ -1500,6 +1500,8 @@ class DownloadHistory(Base):
     outage_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # Ad-hoc pushes parked by an outage keep their download link for the resume job.
+    release_link: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     deliver_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )

@@ -309,3 +309,63 @@ async def test_resume_endpoint_clears_outages(async_client, nzbgeek_outage):
     res = await async_client.post("/api/pushes/resume-rate-limited")
     assert res.status_code == 200
     assert not has_active_outage()
+
+
+async def _queue_adhoc(db_session, *, episode: int = 3):
+    await make_indexer_provider(db_session, api_url=INDEXER_URL)
+    await db_session.commit()
+    record_outage("downloader", "torbox", "TorBox", "HTTP 500", 1)
+    return await push_adhoc_release(
+        db_session,
+        release_link=f"{INDEXER_URL}?t=get&id=1",
+        nzb_title="Show.S03E03.2160p.WEB-GRP",
+        nzb_guid="g3",
+        media_title="Show",
+        media_kind="tv",
+        tmdb_id=1,
+        season=3,
+        episode=episode,
+        deliver=True,
+    )
+
+
+async def test_adhoc_outage_queue_flags_outcome_and_keeps_link(db_session):
+    outcome = await _queue_adhoc(db_session)
+    assert outcome.ok and outcome.queued
+    (row,) = (await db_session.execute(select(DownloadHistory))).scalars().all()
+    assert row.release_link == f"{INDEXER_URL}?t=get&id=1"
+    assert row.deliver_enabled is True
+
+
+async def test_resume_redispatches_adhoc_row(db_session):
+    await _queue_adhoc(db_session)
+    assert await resume_rate_limited_pushes() == 0  # still cooling down
+    clear_outages()
+    torbox.clear_cooldown()
+    p1, p2, p3 = _patches()
+    with p1, p2, p3:
+        assert await resume_rate_limited_pushes() == 1
+    db_session.expire_all()
+    (row,) = (await db_session.execute(select(DownloadHistory))).scalars().all()
+    assert row.status_detail == "downloading"
+    assert row.downloader_transfer_id == "tb1"
+    assert row.is_ad_hoc and row.target_label == "S03E03"
+    assert row.deliver_enabled is True
+
+
+async def test_resume_adhoc_hard_failure_marks_row_failed(db_session):
+    await _queue_adhoc(db_session)
+    clear_outages()
+    torbox.clear_cooldown()
+    upload = AsyncMock(
+        return_value=(
+            _client(),
+            DownloaderUploadResult(success=False, detail="bad nzb"),
+        )
+    )
+    p1, p2, p3 = _patches(upload=upload)
+    with p1, p2, p3:
+        await resume_rate_limited_pushes()
+    db_session.expire_all()
+    (row,) = (await db_session.execute(select(DownloadHistory))).scalars().all()
+    assert (row.status_detail or "").startswith("failed")

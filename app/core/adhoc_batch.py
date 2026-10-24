@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BatchSummary:
     pushed: list[str] = field(default_factory=list)
+    queued: list[str] = field(default_factory=list)
     no_release: list[str] = field(default_factory=list)
     skipped_in_flight: list[str] = field(default_factory=list)
     skipped_unaired: int = 0
@@ -164,9 +165,10 @@ async def run_episode_batch(
         logger.exception("[ADHOC-BATCH] %s failed: %s", media_title, exc)
         summary.aborted_reason = summary.aborted_reason or "Metadata lookup failed"
     logger.info(
-        "[ADHOC-BATCH] %s: pushed %d, no release %d, in flight %d, unaired %d%s",
+        "[ADHOC-BATCH] %s: pushed %d, queued %d, no release %d, in flight %d, unaired %d%s",
         media_title,
         len(summary.pushed),
+        len(summary.queued),
         len(summary.no_release),
         len(summary.skipped_in_flight),
         summary.skipped_unaired,
@@ -245,7 +247,7 @@ async def _push_one(
             deliver=deliver,
         )
     if outcome.ok:
-        summary.pushed.append(label)
+        (summary.queued if outcome.queued else summary.pushed).append(label)
         return False
     if outcome.hard_failure:
         summary.aborted_reason = outcome.message

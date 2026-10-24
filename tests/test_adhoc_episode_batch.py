@@ -248,3 +248,10 @@ async def test_batch_continues_after_per_release_failure(batch_env: dict) -> Non
     summary = await _run()
     assert summary.aborted_reason is None
     assert summary.no_release == ["S01E01", "S01E02", "S02E01"]
+
+
+async def test_batch_counts_queued_pushes_separately(batch_env: dict) -> None:
+    batch_env["push_outcome"] = AdHocPushOutcome(True, "queued", 200, queued=True)
+    summary = await _run(batch_scope="season", season=2)
+    assert summary.pushed == []
+    assert summary.queued == ["S02E01"]
