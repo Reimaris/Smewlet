@@ -782,3 +782,73 @@ async def test_startup_recovery_probes_offline_rows(
     assert held.delivery_status == "pending"
     assert worker.queued_history_ids() == [held.id]
     assert not offline.is_offline()
+
+
+async def test_downloader_outage_rows_resume_once_provider_answers(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setattr(worker, "DOWNLOADER_RETRY_SECONDS", 0)
+    monkeypatch.setattr(worker, "DOWNLOADER_PROBE_POLL_SECONDS", 0.01)
+    rows = [
+        await _pending(
+            db_session,
+            nzb_guid=f"g-out{i}",
+            delivery_status="paused",
+            delivery_error="DOWNLOADER_UNAVAILABLE",
+        )
+        for i in range(3)
+    ]
+    queued: list[int] = []
+
+    async def enqueue(history_id: int, *, front: bool = False) -> None:
+        queued.append(history_id)
+        if len(queued) == 1:  # the probe gets past the link fetch
+            async with worker.get_session_factory()() as session:
+                row = await session.get(DownloadHistory, history_id)
+                assert row is not None
+                row.delivery_status = "delivering"
+                await session.commit()
+
+    monkeypatch.setattr(worker, "enqueue_delivery", enqueue)
+
+    await worker._resume_after_outage()
+
+    assert queued == [rows[0].id, rows[1].id, rows[2].id]
+    db_session.expire_all()
+    for r in rows[1:]:
+        await db_session.refresh(r)
+        assert (r.delivery_status, r.delivery_error) == ("pending", None)
+
+
+async def test_downloader_outage_probe_repauses_and_keeps_waiting(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setattr(worker, "DOWNLOADER_RETRY_SECONDS", 0)
+    monkeypatch.setattr(worker, "DOWNLOADER_PROBE_POLL_SECONDS", 0.01)
+    for i in range(2):
+        await _pending(
+            db_session,
+            nzb_guid=f"g-outb{i}",
+            delivery_status="paused",
+            delivery_error="DOWNLOADER_UNAVAILABLE",
+        )
+    attempts: list[int] = []
+
+    async def enqueue(history_id: int, *, front: bool = False) -> None:
+        attempts.append(history_id)
+        async with worker.get_session_factory()() as session:
+            row = await session.get(DownloadHistory, history_id)
+            assert row is not None
+            if len(attempts) < 3:  # still down: probe re-pauses
+                row.delivery_status = "paused"
+                row.delivery_error = "DOWNLOADER_UNAVAILABLE"
+            else:
+                row.delivery_status = "delivering"
+            await session.commit()
+
+    monkeypatch.setattr(worker, "enqueue_delivery", enqueue)
+
+    await worker._resume_after_outage()
+
+    assert len(attempts) == 4  # 3 probes (head row) + 1 release of the rest
+    assert len(set(attempts)) == 2

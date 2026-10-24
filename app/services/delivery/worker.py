@@ -19,6 +19,7 @@ from app.db.database import get_session_factory
 from app.db.models import DeliveredFile, DeliveryStatus, DownloadHistory
 from app.services.delivery.config import DeliveryConfig
 from app.services.delivery.engines import (
+    DOWNLOADER_UNAVAILABLE,
     CloudStreamEngine,
     DeliveryAborted,
     DeliveryEngine,
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 PAUSE_CODES = frozenset(
     {
+        DOWNLOADER_UNAVAILABLE,
         "INSUFFICIENT_STORAGE",
         "PATH_NOT_CONFIGURED",
         "PATH_UNAVAILABLE",
@@ -62,12 +64,17 @@ PROGRESS_INTERVAL_SECONDS = 1.0
 TRANSIENT_DB_ERRORS = (PoolTimeoutError, OperationalError)
 MAX_DB_RETRIES = 3
 DB_RETRY_DELAY_SECONDS = 5.0
+# Rows paused by a downloader outage are retried until the provider answers.
+DOWNLOADER_RETRY_SECONDS = 60.0
+DOWNLOADER_PROBE_WAIT_SECONDS = 30.0
+DOWNLOADER_PROBE_POLL_SECONDS = 2.0
 
 _queued_ids: list[int] = []
 _processing = False
 _wake: asyncio.Event | None = None
 _idle: asyncio.Event | None = None
 _task: asyncio.Task[None] | None = None
+_outage_task: asyncio.Task[None] | None = None
 _refresh_folders: set[Path] = set()
 _db_retries: dict[int, int] = {}
 
@@ -277,6 +284,8 @@ async def process_delivery(session: AsyncSession, history_id: int) -> None:
     await session.commit()
     if history.delivery_status == DeliveryStatus.DELIVERED.value:
         await _queue_refresh(session, history)
+    elif history.delivery_error == DOWNLOADER_UNAVAILABLE:
+        _ensure_outage_resume()
     await _notify(session, history)
 
 
@@ -533,6 +542,76 @@ async def _resume_offline_rows(session: AsyncSession) -> list[int]:
     return [h.id for h in rows]
 
 
+async def _outage_ids(session: AsyncSession) -> list[int]:
+    return list(
+        (
+            await session.execute(
+                select(DownloadHistory.id)
+                .where(
+                    DownloadHistory.delivery_status == DeliveryStatus.PAUSED.value,
+                    DownloadHistory.delivery_error == DOWNLOADER_UNAVAILABLE,
+                )
+                .order_by(DownloadHistory.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _requeue(session: AsyncSession, ids: list[int]) -> None:
+    for history_id in ids:
+        history = await session.get(DownloadHistory, history_id)
+        if history is not None:
+            history.delivery_status = DeliveryStatus.PENDING.value
+            history.delivery_error = None
+    await session.commit()
+    for history_id in ids:
+        await enqueue_delivery(history_id)
+
+
+async def _probe_still_down(probe_id: int) -> bool:
+    """Wait for the probe row to re-pause (outage persists) or move on (healthy)."""
+    waited = 0.0
+    while waited < DOWNLOADER_PROBE_WAIT_SECONDS:
+        await asyncio.sleep(DOWNLOADER_PROBE_POLL_SECONDS)
+        waited += DOWNLOADER_PROBE_POLL_SECONDS
+        async with get_session_factory()() as session:
+            history = await session.get(DownloadHistory, probe_id)
+            if history is None:
+                return False
+            if history.delivery_status == DeliveryStatus.PAUSED.value:
+                return history.delivery_error == DOWNLOADER_UNAVAILABLE
+    return False
+
+
+async def _resume_after_outage() -> None:
+    """Retry rows paused by a downloader outage: one probe, then the rest."""
+    while True:
+        await asyncio.sleep(DOWNLOADER_RETRY_SECONDS)
+        async with get_session_factory()() as session:
+            ids = await _outage_ids(session)
+            if not ids:
+                return
+            await _requeue(session, ids[:1])
+        if await _probe_still_down(ids[0]):
+            continue
+        async with get_session_factory()() as session:
+            rest = await _outage_ids(session)
+            if rest:
+                logger.info(
+                    "[DELIVERY] downloader reachable: resuming %s row(s)", len(rest)
+                )
+                await _requeue(session, rest)
+        return
+
+
+def _ensure_outage_resume() -> None:
+    global _outage_task
+    if _outage_task is None or _outage_task.done():
+        _outage_task = asyncio.create_task(_resume_after_outage())
+
+
 async def _worker_loop() -> None:
     global _processing
     wake, _ = _events()
@@ -566,7 +645,12 @@ async def start_delivery_worker() -> None:
 
 
 async def stop_delivery_worker() -> None:
-    global _task, _wake, _idle, _processing
+    global _task, _outage_task, _wake, _idle, _processing
+    if _outage_task is not None:
+        _outage_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _outage_task
+        _outage_task = None
     if _task is not None:
         _task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -652,6 +736,8 @@ async def recover_interrupted_deliveries(session: AsyncSession) -> int:
     await session.commit()
     for h in rows:
         await enqueue_delivery(h.id)
+    if await _outage_ids(session):
+        _ensure_outage_resume()
     # Rows held by an offline storage: probe once; reachable -> back in the queue.
     if held:
         for root in roots:

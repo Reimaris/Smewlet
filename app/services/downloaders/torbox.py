@@ -521,8 +521,14 @@ async def get_usenet_downloads(
     api_key: str | None = None,
     session: AsyncSession | None = None,
     explicit_key: str | None = None,
+    raise_on_error: bool = False,
 ) -> list[dict[str, Any]]:
-    """Retrieve list of active Usenet downloads from TorBox."""
+    """Retrieve list of active Usenet downloads from TorBox.
+
+    With ``raise_on_error`` a transport failure raises ``DownloaderNetworkError``
+    instead of returning ``[]``, so callers can tell an outage from a missing
+    transfer.
+    """
     global _cached_usenet_downloads, _cached_usenet_downloads_at
 
     key = await resolve_api_key(session=session, explicit_key=explicit_key or api_key)
@@ -573,7 +579,13 @@ async def get_usenet_downloads(
                     "⚠️ TorBox rate limit hit (429) during get_usenet_downloads. Activating cooldown for %ss.",
                     int(cooldown_secs),
                 )
-            logger.error(f"Failed to get TorBox usenet downloads: {e}")
+            logger.error(
+                f"Failed to get TorBox usenet downloads: {type(e).__name__}: {e}"
+            )
+            if raise_on_error:
+                raise DownloaderNetworkError(
+                    f"TorBox unreachable: {type(e).__name__}"
+                ) from None
             return []
 
 
@@ -833,7 +845,10 @@ class TorBoxDownloader(BaseDownloader):
 
     async def get_download_links(self, transfer_id: str) -> list[DownloadLink]:
         items = await get_usenet_downloads(
-            bypass_cache=True, session=self.session, explicit_key=self._key
+            bypass_cache=True,
+            session=self.session,
+            explicit_key=self._key,
+            raise_on_error=True,
         )
         item = next((i for i in items if str(i.get("id")) == str(transfer_id)), None)
         if item is None:

@@ -41,7 +41,12 @@ from app.services.delivery.offline import (
     run_fs,
 )
 from app.services.delivery.planner import PlannedFile
-from app.services.downloaders.base import DownloaderError, DownloadLink
+from app.services.downloaders.base import (
+    DownloaderError,
+    DownloaderNetworkError,
+    DownloaderOutageError,
+    DownloadLink,
+)
 from app.services.downloaders.factory import get_downloader_client_for_type
 
 logger = logging.getLogger(__name__)
@@ -121,6 +126,12 @@ def _open_stream(
         raise _FileError(f"HTTP {exc.code}") from None
     except (OSError, http.client.HTTPException) as exc:
         raise _FileError(f"Network error: {type(exc).__name__}") from None
+
+
+LINK_FETCH_ATTEMPTS = 2  # rides out blips; longer outages pause the row
+LINK_FETCH_RETRY_SECONDS = 5.0
+DOWNLOADER_UNAVAILABLE = "DOWNLOADER_UNAVAILABLE"
+_OUTAGE_ERRORS = (DownloaderNetworkError, DownloaderOutageError)
 
 
 class DeliveryEngine(Protocol):
@@ -339,11 +350,26 @@ class CloudStreamEngine(_BaseEngine):
             try:
                 if client is None or not history.downloader_transfer_id:
                     raise DownloaderError("No downloader available")
-                for link in await client.get_download_links(
-                    history.downloader_transfer_id
-                ):
+                for attempt in range(LINK_FETCH_ATTEMPTS):
+                    try:
+                        fetched = await client.get_download_links(
+                            history.downloader_transfer_id
+                        )
+                        break
+                    except _OUTAGE_ERRORS:
+                        if attempt == LINK_FETCH_ATTEMPTS - 1:
+                            raise
+                        await asyncio.sleep(LINK_FETCH_RETRY_SECONDS * (attempt + 1))
+                for link in fetched:
                     links[link.name] = link
                     links.setdefault(_basename(link.name), link)
+            except _OUTAGE_ERRORS as exc:
+                logger.warning(
+                    "[DELIVERY] history %s: downloader unavailable: %s",
+                    history.id,
+                    redact_text(str(exc)),
+                )
+                link_error = DOWNLOADER_UNAVAILABLE
             except DownloaderError as exc:
                 link_error = redact_text(str(exc))[:200]
 

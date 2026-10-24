@@ -35,11 +35,13 @@ from app.services.downloaders.base import (
     DownloaderError,
     DownloaderFile,
     DownloaderNetworkError,
+    DownloaderOutageError,
     DownloaderTransfer,
     DownloadLink,
     TransferState,
 )
 from app.services.downloaders.sabnzbd import SabnzbdDownloader
+from app.services.outage_classifier import OutageVerdict
 from tests.conftest import fake_urlopen, make_history
 
 NAME = "Example.Show.S01E01.1080p.WEB-DL.x265-GRP.mkv"
@@ -96,6 +98,19 @@ async def test_torbox_link_errors(
     with pytest.raises(exc) as info:
         await dl.get_download_links("7")
     assert "test-key" not in str(info.value)
+
+
+async def test_torbox_list_outage_is_not_missing_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_list(**kw: Any) -> list[dict[str, Any]]:
+        assert kw["raise_on_error"] is True
+        raise DownloaderNetworkError("TorBox unreachable: ReadTimeout")
+
+    monkeypatch.setattr(torbox, "get_usenet_downloads", fake_list)
+    dl = torbox.TorBoxDownloader(Provider(api_key="test-key"))
+    with pytest.raises(DownloaderNetworkError, match="unreachable"):
+        await dl.get_download_links("7")
 
 
 async def test_torbox_unknown_transfer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,6 +315,37 @@ async def test_expired_link(
     row = await _row(db_session)
     assert (row.status, row.error) == ("failed", "LINK_EXPIRED")
     assert not (tmp_path / "ep.mkv.part").exists()
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        lambda: DownloaderNetworkError("TorBox unreachable: ReadTimeout"),
+        lambda: DownloaderOutageError("HTTP 503", OutageVerdict("outage", "HTTP 503")),
+    ],
+)
+async def test_downloader_outage_pauses_instead_of_failing(
+    make_exc, db_session, use_client, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(engines, "LINK_FETCH_RETRY_SECONDS", 0)
+    calls = 0
+
+    class _Down(_FakeClient):
+        async def get_download_links(self, transfer_id: str) -> list[DownloadLink]:
+            nonlocal calls
+            calls += 1
+            raise make_exc()
+
+    history = await make_history(db_session, nzb_guid="g-out")
+    use_client(_Down([]))
+
+    await CloudStreamEngine().deliver(
+        db_session, history, [_plan("ep.mkv", tmp_path / "ep.mkv")], CFG
+    )
+
+    row = await _row(db_session)
+    assert (row.status, row.error) == ("failed", "DOWNLOADER_UNAVAILABLE")
+    assert calls == engines.LINK_FETCH_ATTEMPTS
 
 
 async def test_http_error_status_is_recorded(
