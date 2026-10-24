@@ -65,6 +65,11 @@ DELIVERY_WRITE_STALL_SECONDS: int = 120  # no byte progress for this long = writ
 DELIVERY_ABANDON_GRACE_SECONDS: float = 5.0  # max wait for a download thread after stop
 WATCHDOG_POLL_SECONDS: float = 1.0
 EXPIRED_STATUSES = frozenset({401, 403, 404})
+LINK_FETCH_ATTEMPTS = 2  # rides out blips; longer outages pause the row
+LINK_FETCH_RETRY_SECONDS = 5.0
+DOWNLOADER_UNAVAILABLE = "DOWNLOADER_UNAVAILABLE"
+STREAM_INTERRUPTED = "STREAM_INTERRUPTED"  # connection dropped / 5xx mid-download
+_OUTAGE_ERRORS = (DownloaderNetworkError, DownloaderOutageError)
 
 _abort_requested: set[int] = set()
 
@@ -126,13 +131,6 @@ def _open_stream(
         raise _FileError(f"HTTP {exc.code}") from None
     except (OSError, http.client.HTTPException) as exc:
         raise _FileError(f"Network error: {type(exc).__name__}") from None
-
-
-LINK_FETCH_ATTEMPTS = 2  # rides out blips; longer outages pause the row
-LINK_FETCH_RETRY_SECONDS = 5.0
-DOWNLOADER_UNAVAILABLE = "DOWNLOADER_UNAVAILABLE"
-STREAM_INTERRUPTED = "STREAM_INTERRUPTED"  # connection dropped / 5xx mid-download
-_OUTAGE_ERRORS = (DownloaderNetworkError, DownloaderOutageError)
 
 
 class DeliveryEngine(Protocol):

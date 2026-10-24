@@ -67,8 +67,8 @@ TRANSIENT_DB_ERRORS = (PoolTimeoutError, OperationalError)
 MAX_DB_RETRIES = 3
 DB_RETRY_DELAY_SECONDS = 5.0
 # Rows paused by a downloader outage are retried until the provider answers.
-MAX_STREAM_PAUSES = 5  # link-fetch outages pause indefinitely; stream drops do not
 OUTAGE_CODES = (DOWNLOADER_UNAVAILABLE, STREAM_INTERRUPTED)
+MAX_STREAM_PAUSES = 5  # link-fetch outages pause indefinitely; stream drops do not
 DOWNLOADER_RETRY_SECONDS = 60.0
 DOWNLOADER_PROBE_WAIT_SECONDS = 30.0
 DOWNLOADER_PROBE_POLL_SECONDS = 2.0
@@ -680,6 +680,7 @@ async def stop_delivery_worker() -> None:
     await stop_watcher()
     set_recovery_callback(None)
     _queued_ids.clear()
+    _stream_pauses.clear()
     _processing = False
     _wake = _idle = None
 
