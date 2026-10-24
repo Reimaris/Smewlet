@@ -7,7 +7,7 @@
 {% endif %}
 {% for season in seasons %}
 <div x-data="{ open: false, searched: false }" class="border-b border-[#3f3f46] last:border-b-0">
-    <div class="px-4 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-[#2a2a32]"
+    <div class="px-4 py-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 cursor-pointer hover:bg-[#2a2a32]"
          @click="open = !open"
          hx-get="/api/search/manual/media/{{ hit.provider }}/{{ hit.ext_id }}/seasons/{{ season.season_number }}/episodes?kind={{ hit.kind }}&{{ hit | hit_qs }}"
          hx-trigger="click once" hx-target="#episodes-{{ hit.provider }}-{{ hit.ext_id }}-s{{ season.season_number }}" hx-swap="innerHTML">
@@ -15,7 +15,7 @@
             <span class="text-sm text-white font-medium">{{ season.name }}</span>
             <span class="text-xs text-[#a1a1aa] ml-2">{{ season.episode_count }} episode{{ '' if season.episode_count == 1 else 's' }}{% if season.air_year %} · {{ season.air_year }}{% endif %}</span>
         </div>
-        <div class="shrink-0 flex items-center gap-2">
+        <div class="shrink-0 flex flex-wrap items-start sm:items-center gap-2">
         {{ batch_season_button(hit, season.season_number) }}
         {{ search_button(hit, 'season', season.season_number) }}
         <button type="button"

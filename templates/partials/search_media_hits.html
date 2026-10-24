@@ -25,7 +25,7 @@
 {% for hit in hits %}
 {% set has_seasons = hit.kind in ['series', 'anime'] %}
 <div x-data="{ open: false, searched: false }" class="bg-[#2a2a32] border border-[#3f3f46] rounded-xl shadow-lg overflow-hidden">
-    <div class="p-3.5 flex items-start gap-3{% if has_seasons %} cursor-pointer hover:bg-[#2f2f38]{% endif %}"
+    <div class="p-3.5 flex flex-wrap sm:flex-nowrap items-start gap-3{% if has_seasons %} cursor-pointer hover:bg-[#2f2f38]{% endif %}"
          {% if has_seasons %}@click="open = !open"
          hx-get="/api/search/manual/media/{{ hit.provider }}/{{ hit.ext_id }}/seasons?kind={{ hit.kind }}&{{ hit | hit_qs }}"
          hx-trigger="click once" hx-target="#seasons-{{ hit.provider }}-{{ hit.ext_id }}" hx-swap="innerHTML"{% endif %}>
@@ -34,7 +34,7 @@
         {% else %}
         <div class="w-12 h-[72px] rounded shrink-0 bg-[#1e1e24] border border-[#3f3f46]"></div>
         {% endif %}
-        <div class="flex-1 min-w-0">
+        <div class="flex-1 min-w-[10rem] sm:min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
                 <h3 class="text-white text-sm font-semibold truncate" title="{{ hit.title }}">{{ hit.title }}</h3>
                 {% if hit.year %}<span class="text-xs text-[#a1a1aa]">{{ hit.year }}</span>{% endif %}
@@ -45,7 +45,7 @@
             </div>
             {% if hit.overview %}<p class="text-xs text-[#a1a1aa] mt-1 line-clamp-2">{{ hit.overview }}</p>{% endif %}
         </div>
-        <div class="shrink-0 flex items-center gap-2">
+        <div class="w-full sm:w-auto sm:shrink-0 flex flex-wrap items-start sm:items-center gap-2">
         {% if has_seasons %}{{ batch_deliver_toggle(hit) }}{{ batch_all_button(hit) }}{% endif %}
         {{ search_button(hit, 'item') }}
         {% if has_seasons %}

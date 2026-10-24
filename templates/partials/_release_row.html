@@ -111,13 +111,13 @@ drawer-{{ hit.provider }}-{{ hit.ext_id }}{% if season is not none %}-s{{ season
     "anilist_id": hit.anilist_id or "", "poster_url": hit.poster_url or "",
     "season": season if season is not none else "",
 } %}
-<span class="shrink-0 inline-flex items-center gap-2" @click.stop>
-<span id="{{ sid }}"></span>
+<span class="shrink-0 inline-flex flex-col items-start gap-1" @click.stop>
 <button type="button"
         hx-post="/api/search/manual/batch-push" hx-target="#{{ sid }}" hx-swap="innerHTML"
         hx-include="#manual-search-form{% if delivery_provider_exists %}, #batch-deliver-{{ hit.provider }}-{{ hit.ext_id }}{% endif %}"
         hx-vals='{{ vals | tojson }}'
         class="shrink-0 px-3 py-1.5 bg-[#1e1e24] hover:bg-[#33333b] border border-[#3f3f46] rounded-md text-xs text-white">{{ label }}</button>
+<span id="{{ sid }}" class="max-w-full"></span>
 </span>
 {% endmacro %}
 
