@@ -722,6 +722,9 @@ class MediaItem(Base):
     last_air_dates_refreshed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_episode_growth_check_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     auto_push_episodes: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )

@@ -866,6 +866,12 @@ async def init_db(database_url: str) -> None:
                             "ALTER TABLE media_items ADD COLUMN last_air_dates_refreshed_at DATETIME;"
                         )
                     )
+                if "last_episode_growth_check_at" not in mi_cols:
+                    await session.execute(
+                        __import__("sqlalchemy").text(
+                            "ALTER TABLE media_items ADD COLUMN last_episode_growth_check_at DATETIME;"
+                        )
+                    )
             except Exception:
                 pass
 

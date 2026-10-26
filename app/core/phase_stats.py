@@ -26,6 +26,13 @@ class TbaDiscoveryStats:
 
 
 @dataclass
+class EpisodeGrowthStats:
+    probed: int = 0
+    seasons_grown: int = 0
+    episodes_added: int = 0
+
+
+@dataclass
 class AirPushStats:
     eligible: int = 0
     dispatched: int = 0

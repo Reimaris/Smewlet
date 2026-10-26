@@ -251,6 +251,7 @@ async def get_anime_details_batch_by_ids(
           format
           episodes
           status
+          nextAiringEpisode { episode }
           startDate { year month day }
           title { romaji english native }
         }
