@@ -292,3 +292,17 @@ async def test_library_maintenance_runs_growth_phase(db_session, monkeypatch, ca
         stats = await run_library_maintenance(db_session, include_anime=False)
     assert stats.episodes_grown == 4
     assert "[SYNC] [MAINT] [growth] 4 new episodes added" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_library_maintenance_survives_growth_probe_failure(
+    db_session, monkeypatch
+):
+    from app.services.library_maintenance import run_library_maintenance
+
+    async def boom(session, now=None, *, stats=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(episode_growth, "refresh_episode_growth", boom)
+    stats = await run_library_maintenance(db_session, include_anime=False)
+    assert stats.episodes_grown == 0

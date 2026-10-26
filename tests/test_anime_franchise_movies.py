@@ -1165,6 +1165,10 @@ async def test_tba_format_null_fallback_and_24h_batched_future_season_refresh(
             "app.services.anilist.get_anime_details_batch_by_ids",
             new=AsyncMock(return_value=batch_updated_payload),
         ) as mock_batch_refresh_3,
+        patch(
+            "app.core.episode_growth.refresh_episode_growth",
+            new=AsyncMock(return_value=0),
+        ),
     ):
         await sync_all_providers()
         assert mock_hier_3.await_count == 0

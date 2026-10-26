@@ -147,6 +147,7 @@ async def _probe_show(
 ) -> int:
     """Probe one TMDB show; return the number of episodes added."""
     if not item.tmdb_id:
+        _stamp(item, now, settled=False)
         return 0
     tmdb_id = int(item.tmdb_id)
     if tmdb_id not in show_cache:
@@ -171,9 +172,13 @@ async def _probe_show(
     upstream = int((entry or {}).get("episode_count") or 0)
     added = 0
     if upstream > _local_count(season):
-        details = await tmdb.get_season_details(
-            tmdb_id, season.season_number, session=session
-        )
+        try:
+            details = await tmdb.get_season_details(
+                tmdb_id, season.season_number, session=session
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Episode growth: TMDB season %d failed: %s", tmdb_id, e)
+            details = None
         if details:
             air_dates, highest = _tmdb_air_dates(details)
             added = ensure_episode_rows(

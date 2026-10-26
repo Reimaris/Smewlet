@@ -52,8 +52,15 @@ async def run_library_maintenance(
         "[SYNC] [MAINT] [2/4] %d TBA seasons discovered", stats.tba_seasons_discovered
     )
 
-    stats.episodes_grown = await refresh_episode_growth(session)
-    logger.info("[SYNC] [MAINT] [growth] %d new episodes added", stats.episodes_grown)
+    try:
+        stats.episodes_grown = await refresh_episode_growth(session)
+    except Exception as e:  # noqa: BLE001
+        await session.rollback()
+        logger.error("Episode growth probe failed: %s", e)
+    if stats.episodes_grown:
+        logger.info(
+            "[SYNC] [MAINT] [growth] %d new episodes added", stats.episodes_grown
+        )
 
     stats.duplicates_merged = await au.deduplicate_media_items(session)
     logger.info("[SYNC] [MAINT] [3/4] %d duplicates merged", stats.duplicates_merged)
