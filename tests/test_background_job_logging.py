@@ -104,7 +104,7 @@ from app.core import automation  # noqa: E402
 from app.db.models import EpisodeStatus  # noqa: E402
 from tests.conftest import make_series  # noqa: E402
 
-SYNC_PREFIX = "[ORCHESTRATOR] [1/5] Periodic watchlist sync:"
+SYNC_PREFIX = "[ORCHESTRATOR] [1/6] Periodic watchlist sync:"
 
 
 def _orch_messages(caplog) -> list[str]:
@@ -134,10 +134,11 @@ async def test_idle_tick_info_lines(caplog, monkeypatch):
     ]
     assert msgs == [
         f"{SYNC_PREFIX} no active watchlist provider with credentials",
-        "[ORCHESTRATOR] [2/5] Broadcast air date refresh: 0 refreshed (0 frozen, 0 paced)",
-        "[ORCHESTRATOR] [3/5] Air date rollover: 0 due episodes/seasons rolled over to searching",
-        "[ORCHESTRATOR] [4/5] History autoclear: 0 entries cleared (pruned=0, aged=0)",
-        "[ORCHESTRATOR] [5/5] Air-date push & upgrade: skipped (runs at :00 only)",
+        "[ORCHESTRATOR] [2/6] Broadcast air date refresh: 0 refreshed (0 frozen, 0 paced)",
+        "[ORCHESTRATOR] [3/6] Episode growth probe: 0 probed, 0 new episodes added",
+        "[ORCHESTRATOR] [4/6] Air date rollover: 0 due episodes/seasons rolled over to searching",
+        "[ORCHESTRATOR] [5/6] History autoclear: 0 entries cleared (pruned=0, aged=0)",
+        "[ORCHESTRATOR] [6/6] Air-date push & upgrade: skipped (runs at :00 only)",
     ]
     banners = [
         r.getMessage() for r in caplog.records if r.getMessage().startswith("=====")
@@ -166,7 +167,7 @@ async def test_tick_reports_rollover_count(db_session, caplog, monkeypatch):
     await _tick(caplog, monkeypatch, _utc(10, 20))
     # N = episodes_rolled_over + seasons_rolled_over (the FUTURE season rolls too)
     assert (
-        "[ORCHESTRATOR] [3/5] Air date rollover: 2 due episodes/seasons rolled over to searching"
+        "[ORCHESTRATOR] [4/6] Air date rollover: 2 due episodes/seasons rolled over to searching"
         in _orch_messages(caplog)
     )
 
@@ -449,5 +450,5 @@ async def test_sync_lines_inside_tick_carry_orchestrator_step_prefix(
         await automation.run_orchestrator_tick(_utc(10, 20))
         automation.logger.info("[SYNC] outside tick")
     msgs = [r.getMessage() for r in caplog.records]
-    assert "[ORCHESTRATOR] [1/5] [SYNC] [1/3] Fake: fetched 1 entries" in msgs
+    assert "[ORCHESTRATOR] [1/6] [SYNC] [1/3] Fake: fetched 1 entries" in msgs
     assert "[SYNC] outside tick" in msgs

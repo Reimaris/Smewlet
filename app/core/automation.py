@@ -19,11 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import air_dates as air_date_engine
+from app.core import episode_growth
 from app.core.anime_titles import apply_title_variants
 from app.core.job_lock import library_job_lock
 from app.core.logging_config import log_prefix, log_process_end, log_process_start
 from app.core.phase_stats import (
     AirDateRefreshStats,
+    EpisodeGrowthStats,
     TbaDiscoveryStats,
     WatchlistPeriodicSyncStatus,
 )
@@ -380,8 +382,8 @@ async def run_orchestrator_tick(now: datetime | None = None) -> None:
 
 
 async def _run_orchestrator_tick(now: datetime | None = None) -> None:
-    """Execute the 15-minute orchestrator: watchlist sync (if due), air date refresh, air date
-    rollover, history autoclear and (at xx:00) the air-date push and upgrade pass, in that order."""
+    """Execute the 15-minute orchestrator: watchlist sync (if due), air date refresh, episode growth
+    probe, air date rollover, history autoclear and (at xx:00) the air-date push and upgrade pass, in that order."""
     if await setup_blocks("orchestrator"):
         return
     start = time.monotonic()
@@ -394,7 +396,7 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
     log_process_start(logger, "Orchestrator Tick", tick_label)
 
     # 1. Periodic watchlist sync (due once its interval elapsed since the last stamp)
-    tag = "[ORCHESTRATOR] [1/5] Periodic watchlist sync:"
+    tag = "[ORCHESTRATOR] [1/6] Periodic watchlist sync:"
     try:
         if await setup_blocks("periodic watchlist sync", watchlist=True):
             logger.info("%s skipped (setup incomplete)", tag)
@@ -422,7 +424,7 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
                 logger.info("%s due but a sync is already running; skipping", tag)
             else:
                 logger.info("%s due -> triggering provider sync", tag)
-                token = log_prefix.set("[ORCHESTRATOR] [1/5] ")
+                token = log_prefix.set("[ORCHESTRATOR] [1/6] ")
                 try:
                     await sync_all_providers(banner=False)
                 finally:
@@ -452,11 +454,11 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
             await air_date_engine.enrich_active_shows_episode_air_dates(
                 session,
                 now=now,
-                log_prefix="[ORCHESTRATOR] [2/5]",
+                log_prefix="[ORCHESTRATOR] [2/6]",
                 stats=refresh_stats,
             )
             logger.info(
-                "[ORCHESTRATOR] [2/5] Broadcast air date refresh: %d refreshed (%d frozen, %d paced)",
+                "[ORCHESTRATOR] [2/6] Broadcast air date refresh: %d refreshed (%d frozen, %d paced)",
                 refresh_stats.episodes_updated,
                 refresh_stats.skipped_frozen,
                 refresh_stats.skipped_paced,
@@ -464,23 +466,41 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
         except Exception as e:  # noqa: BLE001
             logger.error("Error during scheduled air date enrichment: %s", e)
             logger.info(
-                "[ORCHESTRATOR] [2/5] Broadcast air date refresh: failed (see error above)"
+                "[ORCHESTRATOR] [2/6] Broadcast air date refresh: failed (see error above)"
             )
 
-        # 3. Roll over FUTURE episodes and seasons that have reached their air date
+        # 3. Add episodes TMDB/AniList announced after a season finished airing (ADR-188)
+        growth_stats = EpisodeGrowthStats()
+        try:
+            await episode_growth.refresh_episode_growth(
+                session, now=now, stats=growth_stats
+            )
+            logger.info(
+                "[ORCHESTRATOR] [3/6] Episode growth probe: %d probed, %d new episodes added",
+                growth_stats.probed,
+                growth_stats.episodes_added,
+            )
+        except Exception as e:  # noqa: BLE001
+            await session.rollback()
+            logger.error("Error during scheduled episode growth probe: %s", e)
+            logger.info(
+                "[ORCHESTRATOR] [3/6] Episode growth probe: failed (see error above)"
+            )
+
+        # 4. Roll over FUTURE episodes and seasons that have reached their air date
         try:
             rolled = await rollover_due_future_episodes_and_seasons(session, now=now)
             logger.info(
-                "[ORCHESTRATOR] [3/5] Air date rollover: %d due episodes/seasons rolled over to searching",
+                "[ORCHESTRATOR] [4/6] Air date rollover: %d due episodes/seasons rolled over to searching",
                 rolled["episodes_rolled_over"] + rolled["seasons_rolled_over"],
             )
         except Exception as e:  # noqa: BLE001
             logger.error("Error during scheduled air date rollover: %s", e)
             logger.info(
-                "[ORCHESTRATOR] [3/5] Air date rollover: failed (see error above)"
+                "[ORCHESTRATOR] [4/6] Air date rollover: failed (see error above)"
             )
 
-    # 4. Purge stale Push History Ledger rows (m51, ADR-125)
+    # 5. Purge stale Push History Ledger rows (m51, ADR-125)
     try:
         from app.core.transfer_poller import (
             autoclear_history_ledger,
@@ -491,7 +511,7 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
             await purge_expired_dry_run_history(session)
             result = await autoclear_history_ledger(session, now=now)
         logger.info(
-            "[ORCHESTRATOR] [4/5] History autoclear: %d entr%s cleared (pruned=%d, aged=%d)",
+            "[ORCHESTRATOR] [5/6] History autoclear: %d entr%s cleared (pruned=%d, aged=%d)",
             result["total"],
             "y" if result["total"] == 1 else "ies",
             result["pruned_count"],
@@ -499,11 +519,11 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
         )
     except Exception as e:  # noqa: BLE001
         logger.error("Error during history autoclear: %s", e)
-        logger.info("[ORCHESTRATOR] [4/5] History autoclear: failed (see error above)")
+        logger.info("[ORCHESTRATOR] [5/6] History autoclear: failed (see error above)")
 
-    # 5. At every full hour, run the air-date push and upgrade pass after the rollover
+    # 6. At every full hour, run the air-date push and upgrade pass after the rollover
     if now.minute == 0:
-        logger.info("[ORCHESTRATOR] [5/5] Air-date push & upgrade: running")
+        logger.info("[ORCHESTRATOR] [6/6] Air-date push & upgrade: running")
         try:
             from app.core.air_push_engine import run_air_date_push_and_upgrade_tick
 
@@ -512,7 +532,7 @@ async def _run_orchestrator_tick(now: datetime | None = None) -> None:
             logger.error("Error during air-date push and upgrade tick: %s", e)
     else:
         logger.info(
-            "[ORCHESTRATOR] [5/5] Air-date push & upgrade: skipped (runs at :00 only)"
+            "[ORCHESTRATOR] [6/6] Air-date push & upgrade: skipped (runs at :00 only)"
         )
 
     took = time.monotonic() - start

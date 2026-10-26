@@ -281,28 +281,36 @@ async def test_anilist_batch_query_requests_next_airing_episode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_library_maintenance_runs_growth_phase(db_session, monkeypatch, caplog):
-    from app.services.library_maintenance import run_library_maintenance
+async def test_orchestrator_tick_runs_growth_probe_without_a_sync(
+    db_session, monkeypatch, caplog
+):
+    from app.core import automation
 
     async def fake_growth(session, now=None, *, stats=None):
+        stats.probed, stats.episodes_added = 2, 4
         return 4
 
     monkeypatch.setattr(episode_growth, "refresh_episode_growth", fake_growth)
     with caplog.at_level("INFO", logger="app.core.automation"):
-        stats = await run_library_maintenance(db_session, include_anime=False)
-    assert stats.episodes_grown == 4
-    assert "[SYNC] [MAINT] [growth] 4 new episodes added" in caplog.text
+        await automation.run_orchestrator_tick(NOW)
+    assert (
+        "[ORCHESTRATOR] [3/6] Episode growth probe: 2 probed, 4 new episodes added"
+        in caplog.text
+    )
 
 
 @pytest.mark.asyncio
-async def test_library_maintenance_survives_growth_probe_failure(
-    db_session, monkeypatch
+async def test_orchestrator_tick_survives_growth_probe_failure(
+    db_session, monkeypatch, caplog
 ):
-    from app.services.library_maintenance import run_library_maintenance
+    from app.core import automation
 
     async def boom(session, now=None, *, stats=None):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(episode_growth, "refresh_episode_growth", boom)
-    stats = await run_library_maintenance(db_session, include_anime=False)
-    assert stats.episodes_grown == 0
+    with caplog.at_level("INFO", logger="app.core.automation"):
+        await automation.run_orchestrator_tick(NOW)
+    assert "Error during scheduled episode growth probe: boom" in caplog.text
+    assert "[ORCHESTRATOR] [3/6] Episode growth probe: failed" in caplog.text
+    assert "[ORCHESTRATOR] [4/6] Air date rollover" in caplog.text

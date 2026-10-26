@@ -19,7 +19,6 @@ class MaintenanceStats:
     sequels_consolidated: int = 0
     anime_seasons_updated: int = 0
     tba_seasons_discovered: int = 0
-    episodes_grown: int = 0
     duplicates_merged: int = 0
     pruned: int = 0
 
@@ -29,7 +28,6 @@ async def run_library_maintenance(
 ) -> MaintenanceStats:
     """Run the four maintenance phases in order and return their counts."""
     from app.core import automation as au
-    from app.core.episode_growth import refresh_episode_growth
     from app.core.phase_stats import TbaDiscoveryStats
 
     stats = MaintenanceStats()
@@ -51,16 +49,6 @@ async def run_library_maintenance(
     logger.info(
         "[SYNC] [MAINT] [2/4] %d TBA seasons discovered", stats.tba_seasons_discovered
     )
-
-    try:
-        stats.episodes_grown = await refresh_episode_growth(session)
-    except Exception as e:  # noqa: BLE001
-        await session.rollback()
-        logger.error("Episode growth probe failed: %s", e)
-    if stats.episodes_grown:
-        logger.info(
-            "[SYNC] [MAINT] [growth] %d new episodes added", stats.episodes_grown
-        )
 
     stats.duplicates_merged = await au.deduplicate_media_items(session)
     logger.info("[SYNC] [MAINT] [3/4] %d duplicates merged", stats.duplicates_merged)
