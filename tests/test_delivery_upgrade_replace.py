@@ -145,6 +145,66 @@ async def test_upgrade_replaces_file_at_identical_destination(
     assert old_file.read_bytes() == PAYLOAD
 
 
+async def test_manual_replace_overwrites_identical_destination_in_place(
+    db_session, downloader, tmp_path
+) -> None:
+    await make_delivery_provider(
+        db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
+    )
+    new = await _season_pack_row(db_session)
+    old_file = await _seed_old(db_session, tmp_path, new, NEW_DEST)
+    new.is_upgrade = False  # manual replace: linked, but not an upgrade
+    await db_session.commit()
+    downloader(FakeDownloaderClient())
+
+    await worker.process_delivery(db_session, new.id)
+
+    await db_session.refresh(new)
+    assert new.delivery_status == "delivered"
+    assert old_file.read_bytes() == PAYLOAD  # not deleted by cleanup, not TARGET_EXISTS
+    assert not old_file.with_name(old_file.name + ".part").exists()
+
+
+async def test_manual_replace_removes_old_file_with_other_name(
+    db_session, downloader, tmp_path
+) -> None:
+    await make_delivery_provider(
+        db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
+    )
+    new = await _season_pack_row(db_session)
+    old_file = await _seed_old(
+        db_session, tmp_path, new, "Test Series (2024)/Season 01/Old Name S01E01.mkv"
+    )
+    new.is_upgrade = False
+    await db_session.commit()
+    downloader(FakeDownloaderClient())
+
+    await worker.process_delivery(db_session, new.id)
+
+    assert not old_file.exists()
+    assert (tmp_path / NEW_DEST).read_bytes() == PAYLOAD
+
+
+async def test_unrecorded_file_at_destination_is_not_overwritten(
+    db_session, downloader, tmp_path
+) -> None:
+    await make_delivery_provider(
+        db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0
+    )
+    new = await _season_pack_row(db_session)
+    stray = tmp_path / NEW_DEST
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b"not-ours")
+    downloader(FakeDownloaderClient())
+
+    await worker.process_delivery(db_session, new.id)
+
+    await db_session.refresh(new)
+    assert new.delivery_status == "failed"
+    assert new.delivery_error == "TARGET_EXISTS"
+    assert stray.read_bytes() == b"not-ours"
+
+
 async def test_failed_upgrade_keeps_old_files(db_session, downloader, tmp_path) -> None:
     await make_delivery_provider(
         db_session, shows_path=str(tmp_path), min_free_buffer_bytes=0

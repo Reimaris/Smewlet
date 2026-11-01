@@ -210,9 +210,34 @@ async def _record(
     await session.commit()
 
 
-def _existing_target(dest: Path, expected_size: int) -> bool:
-    """True when ``dest`` already holds the file; raises TARGET_EXISTS on a size clash."""
+async def _overwritable_paths(
+    session: AsyncSession, history: DownloadHistory
+) -> frozenset[str]:
+    """Destinations delivered by the row this one replaces; safe to overwrite in place."""
+    if history.replaces_history_id is None:
+        return frozenset()
+    rows = (
+        await session.execute(
+            select(DeliveredFile.dest_path).where(
+                DeliveredFile.history_id == history.replaces_history_id,
+                DeliveredFile.status == "delivered",
+            )
+        )
+    ).scalars()
+    return frozenset(r for r in rows if r)
+
+
+def _existing_target(
+    dest: Path, expected_size: int, overwritable: bool = False
+) -> bool:
+    """True when ``dest`` already holds the file; raises TARGET_EXISTS on a size clash.
+
+    A ``dest`` recorded under the replaced row (``overwritable``) is never "existing":
+    it is rewritten atomically by the caller.
+    """
     if not os.path.lexists(dest):
+        return False
+    if overwritable:
         return False
     if dest.is_file() and dest.stat().st_size == expected_size:
         return True
@@ -357,6 +382,7 @@ class CloudStreamEngine(_BaseEngine):
         plan: Sequence[PlannedFile],
         cfg: DeliveryConfig,
     ) -> None:
+        overwritable = await _overwritable_paths(session, history)
         links: dict[str, DownloadLink] = {}
         pending = [p for p in plan if p.status == "pending"]
         link_error: str | None = None
@@ -404,15 +430,26 @@ class CloudStreamEngine(_BaseEngine):
                     sorted(links)[:10],
                 )
                 raise _FileError("LINK_EXPIRED")
-            await self._stream(link, planned.dest.full, cfg, history.id)
+            await self._stream(
+                link,
+                planned.dest.full,
+                cfg,
+                history.id,
+                str(planned.dest.full) in overwritable,
+            )
 
         await self._run(session, history, plan, cfg, one)
 
     async def _stream(
-        self, link: DownloadLink, dest: Path, cfg: DeliveryConfig, history_id: int
+        self,
+        link: DownloadLink,
+        dest: Path,
+        cfg: DeliveryConfig,
+        history_id: int,
+        overwrite: bool = False,
     ) -> None:
         root = configured_root_of(dest, cfg)
-        if await run_fs(root, _existing_target, dest, link.size_bytes):
+        if await run_fs(root, _existing_target, dest, link.size_bytes, overwrite):
             return
         await run_fs(
             root,
@@ -732,6 +769,7 @@ class LocalLinkEngine(_BaseEngine):
         plan: Sequence[PlannedFile],
         cfg: DeliveryConfig,
     ) -> None:
+        overwritable = await _overwritable_paths(session, history)
         folder: str | None = None
         if any(p.status == "pending" for p in plan):
             client = await get_downloader_client_for_type(
@@ -753,19 +791,29 @@ class LocalLinkEngine(_BaseEngine):
                 configured_root_of(planned.dest.full, cfg), src.is_file
             ):
                 raise _FileError("PATH_UNAVAILABLE")
-            await self._place(src, planned.dest.full, cfg)
+            await self._place(
+                src, planned.dest.full, cfg, str(planned.dest.full) in overwritable
+            )
 
         await self._run(session, history, plan, cfg, one)
 
-    async def _place(self, src: Path, dest: Path, cfg: DeliveryConfig) -> None:
+    async def _place(
+        self, src: Path, dest: Path, cfg: DeliveryConfig, overwrite: bool = False
+    ) -> None:
         root = configured_root_of(dest, cfg)
         size = (await run_fs(root, src.stat)).st_size
-        if await run_fs(root, _existing_target, dest, size):
+        if await run_fs(root, _existing_target, dest, size, overwrite):
             return
+        # Overwrite goes through a sibling temp name so the swap is atomic.
+        target = dest.with_name(dest.name + ".part") if overwrite else dest
+        if overwrite:
+            await run_fs(root, target.unlink, missing_ok=True)
         if await run_fs(root, same_filesystem, src, dest.parent):
             await run_fs(root, dest.parent.mkdir, parents=True, exist_ok=True)
             try:
-                await run_fs(root, os.link, src, dest)
+                await run_fs(root, os.link, src, target)
+                if overwrite:
+                    await run_fs(root, os.replace, target, dest)
                 return
             except FileExistsError:
                 raise _FileError("TARGET_EXISTS") from None
@@ -776,4 +824,6 @@ class LocalLinkEngine(_BaseEngine):
             root, check_free_space, dest.parent, size, cfg.min_free_buffer_bytes
         )
         await run_fs(root, dest.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(shutil.move, str(src), str(dest))
+        await asyncio.to_thread(shutil.move, str(src), str(target))
+        if overwrite:
+            await run_fs(root, os.replace, target, dest)

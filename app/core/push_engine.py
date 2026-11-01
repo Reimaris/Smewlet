@@ -1390,6 +1390,12 @@ async def _dispatch_candidate_list_to_downloader(
                     ),
                 )
             prior_rows = (await session.execute(prior_stmt)).scalars().all()
+            if replaces_history_id is None:
+                delivered_priors = [
+                    pr for pr in prior_rows if pr.delivery_status == "delivered"
+                ]
+                if delivered_priors:
+                    replaces_history_id = max(delivered_priors, key=lambda r: r.id).id
             for pr in prior_rows:
                 if pr.downloader_transfer_id and str(pr.downloader_transfer_id) != str(
                     new_transfer_id or ""

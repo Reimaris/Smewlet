@@ -122,3 +122,34 @@ async def test_candidate_dispatch_without_downloader_reports_error(db_session):
         db_session, [cand], movie, error_out=errors
     )
     assert out is None and "No active downloader" in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("prior_delivery_status", "links"), [("delivered", True), ("none", False)]
+)
+async def test_manual_replace_links_delivered_prior(
+    prior_delivery_status, links, db_session, sab_requests
+):
+    await seed_sab(db_session)
+    movie = await make_movie(db_session, title="Replace Me")
+    prior = DownloadHistory(
+        media_item_id=movie.id,
+        nzb_title="Replace.Me.2024.1080p.WEB.x264-OLD",
+        nzb_guid="g-old",
+        status_detail="completed",
+        delivery_status=prior_delivery_status,
+    )
+    db_session.add(prior)
+    await db_session.commit()
+    cand = {
+        "guid": "g-new",
+        "title": "Replace.Me.2024.2160p.WEB.x265-NEW",
+        "score": 1.0,
+        "_prefetched_nzb": (VALID_NZB_BYTES, "Replace.Me.2024.2160p.nzb"),
+    }
+
+    history = await _dispatch_candidate_list_to_downloader(db_session, [cand], movie)
+
+    assert isinstance(history, DownloadHistory)
+    assert history.is_upgrade is False
+    assert history.replaces_history_id == (prior.id if links else None)

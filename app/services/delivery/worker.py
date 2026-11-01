@@ -171,7 +171,7 @@ async def _old_slot_rows(
     slots: set[tuple[int | None, int | None]],
 ) -> list[DeliveredFile]:
     """Delivered files of the replaced row that occupy one of ``slots``."""
-    if not history.is_upgrade or history.replaces_history_id is None:
+    if history.replaces_history_id is None:
         return []
     old_rows = (
         await session.execute(
@@ -475,7 +475,7 @@ async def _after_delivered(
     """Upgrade replace of the old slot files, then optional cloud purge."""
     delivered = [r for r in rows if r.status == "delivered" and r.dest_path]
     if (
-        history.is_upgrade
+        history.replaces_history_id is not None
         and delivered
         and await run_fs(
             configured_root_of(Path(delivered[0].dest_path or ""), cfg),
@@ -484,9 +484,13 @@ async def _after_delivered(
         )
     ):
         slots = {(r.episode_id, r.season_id) for r in delivered}
-        await _remove_recorded_files(
-            session, await _old_slot_rows(session, history, slots), cfg
-        )
+        new_paths = {r.dest_path for r in delivered}
+        old_rows = [
+            r
+            for r in await _old_slot_rows(session, history, slots)
+            if r.dest_path not in new_paths
+        ]
+        await _remove_recorded_files(session, old_rows, cfg)
     if (
         cfg.delete_cloud_after_delivery
         and history.downloader_type != "sabnzbd"
