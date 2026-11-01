@@ -1567,8 +1567,27 @@ async def _run_transfer_poller_tick_with_session(
             and sent_at is not None
             and elapsed_seconds > download_timeout_minutes * 60
         )
-        if is_stalled or _is_terminal_failure_state(status_lower):
-            if is_stalled:
+        # A transfer that is fully downloaded but never leaves "processing" is dead
+        # (e.g. missing articles); bound it by the unpack grace period, not the full timeout.
+        is_stuck_processing = False
+        if status_lower == "processing" and float(history.progress_pct or 0.0) >= 100.0:
+            if history.unpack_started_at is None:
+                history.unpack_started_at = now_utc
+            stuck_dt = history.unpack_started_at
+            if stuck_dt.tzinfo is None:
+                stuck_dt = stuck_dt.replace(tzinfo=timezone.utc)
+            is_stuck_processing = (
+                now_utc - stuck_dt
+            ).total_seconds() > UNPACK_GRACE_PERIOD_SECONDS
+        if (
+            is_stalled
+            or is_stuck_processing
+            or _is_terminal_failure_state(status_lower)
+        ):
+            if is_stuck_processing and not is_stalled:
+                reason = f"{display_name} stuck in processing at 100% for over {UNPACK_GRACE_PERIOD_SECONDS // 60}m"
+                log_msg = f"{display_name} download {reason}"
+            elif is_stalled:
                 reason = (
                     f"Stalled download exceeded timeout ({download_timeout_minutes}m)"
                 )

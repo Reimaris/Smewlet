@@ -247,3 +247,68 @@ async def test_transfer_poller_under_timeout_is_not_flagged_as_stalled(
         )
     ).scalar_one_or_none()
     assert bl is None
+
+
+@pytest.mark.asyncio
+async def test_transfer_poller_processing_at_100pct_fails_after_unpack_grace(
+    stalled_watchdog_db,
+):
+    """A transfer stuck in 'processing' at 100% fails after the unpack grace, not the full timeout."""
+    session, _, provider, _ = stalled_watchdog_db
+    now_utc = datetime.now(timezone.utc)
+
+    movie = MediaItem(
+        provider_id=provider.id,
+        title="Stuck Processing Movie",
+        media_type=MediaType.MOVIE,
+        status=MediaStatus.DOWNLOADING,
+        year=2024,
+        simkl_id=98767,
+        fail_count=0,
+    )
+    session.add(movie)
+    await session.flush()
+
+    def _hist(guid: str, tid: str, stuck_minutes: int) -> DownloadHistory:
+        return DownloadHistory(
+            media_item_id=movie.id,
+            nzb_title="Stuck.Processing.Movie.2024.1080p.WEB-DL",
+            nzb_guid=guid,
+            score=8200.0,
+            size_bytes=3 * (1024**3),
+            resolution="1080p",
+            source="web-dl",
+            downloader_transfer_id=tid,
+            dispatched_at=now_utc - timedelta(minutes=16),
+            unpack_started_at=now_utc - timedelta(minutes=stuck_minutes),
+            push_mode="manual",
+            grabbed_language="en",
+            status_detail="processing",
+        )
+
+    fresh = _hist("guid-proc-fresh", "tb-proc-fresh", 2)
+    stuck = _hist("guid-proc-stuck", "tb-proc-stuck", 12)
+    session.add_all([fresh, stuck])
+    await session.commit()
+
+    snapshot = [
+        {
+            "id": tid,
+            "name": "Stuck.Processing.Movie.2024.1080p.WEB-DL",
+            "download_state": "processing",
+            "progress": 1.0,
+            "files": [],
+        }
+        for tid in ("tb-proc-fresh", "tb-proc-stuck")
+    ]
+    with patch(
+        "app.services.downloaders.torbox.delete_usenet_download",
+        new_callable=AsyncMock,
+    ):
+        await run_transfer_poller_tick(session, pre_fetched_downloads=snapshot)
+
+    await session.refresh(fresh)
+    await session.refresh(stuck)
+    assert not (fresh.status_detail or "").startswith("failed")
+    assert (stuck.status_detail or "").startswith("failed")
+    assert "stuck in processing" in (stuck.status_detail or "")
