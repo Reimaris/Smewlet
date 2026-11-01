@@ -1396,6 +1396,16 @@ async def _dispatch_candidate_list_to_downloader(
                 ]
                 if delivered_priors:
                     replaces_history_id = max(delivered_priors, key=lambda r: r.id).id
+                else:
+                    # An earlier manual replace never delivered: its link still
+                    # points at the row whose files occupy the slot.
+                    inherited = [
+                        pr.replaces_history_id
+                        for pr in prior_rows
+                        if pr.replaces_history_id is not None
+                    ]
+                    if inherited:
+                        replaces_history_id = max(inherited)
             for pr in prior_rows:
                 if pr.downloader_transfer_id and str(pr.downloader_transfer_id) != str(
                     new_transfer_id or ""

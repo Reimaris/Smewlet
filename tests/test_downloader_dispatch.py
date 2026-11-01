@@ -153,3 +153,42 @@ async def test_manual_replace_links_delivered_prior(
     assert isinstance(history, DownloadHistory)
     assert history.is_upgrade is False
     assert history.replaces_history_id == (prior.id if links else None)
+
+
+async def test_manual_replace_inherits_link_through_undelivered_replacement(
+    db_session, sab_requests
+):
+    await seed_sab(db_session)
+    movie = await make_movie(db_session, title="Replace Me")
+    delivered = DownloadHistory(
+        media_item_id=movie.id,
+        nzb_title="Replace.Me.2024.1080p.WEB.x264-OLD",
+        nzb_guid="g-old",
+        status_detail="replaced",
+        is_dismissed=True,
+        delivery_status="delivered",
+    )
+    db_session.add(delivered)
+    await db_session.flush()
+    db_session.add(
+        DownloadHistory(
+            media_item_id=movie.id,
+            nzb_title="Replace.Me.2024.720p.WEB.x264-MID",
+            nzb_guid="g-mid",
+            status_detail="completed",
+            delivery_status="none",
+            replaces_history_id=delivered.id,
+        )
+    )
+    await db_session.commit()
+    cand = {
+        "guid": "g-new",
+        "title": "Replace.Me.2024.2160p.WEB.x265-NEW",
+        "score": 1.0,
+        "_prefetched_nzb": (VALID_NZB_BYTES, "Replace.Me.2024.2160p.nzb"),
+    }
+
+    history = await _dispatch_candidate_list_to_downloader(db_session, [cand], movie)
+
+    assert isinstance(history, DownloadHistory)
+    assert history.replaces_history_id == delivered.id
