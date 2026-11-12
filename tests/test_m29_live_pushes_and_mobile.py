@@ -73,12 +73,9 @@ async def test_torbox_cache_ttl_and_force_refresh(
         resp1 = await async_client.get("/api/pushes/active")
         assert resp1.status_code == 200
         mock_clear.assert_not_called()
-        mock_get.assert_awaited_once_with(
-            bypass_cache=False,
-            session=pytest.approx(db_session, abs=1)
-            if False
-            else mock_get.call_args.kwargs["session"],
-        )
+        # The poll bypasses TorBox's server-side list cache
+        mock_get.assert_awaited_once()
+        assert mock_get.call_args.kwargs["bypass_cache"] is True
 
         # With force=1 -> calls clear_usenet_cache before polling
         resp2 = await async_client.get("/api/pushes/active?force=1")

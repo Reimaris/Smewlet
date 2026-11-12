@@ -5587,12 +5587,8 @@ async def api_get_active_pushes(request: Request) -> Response:
         await session.rollback()
         if downloading_count > 0 and not poller_busy():
             try:
-                live_downloads = await downloader_class("torbox").fetch_raw_transfers(
-                    bypass_cache=False
-                )
-                await run_transfer_poller_tick(
-                    session, pre_fetched_downloads=live_downloads
-                )
+                # The tick fetches a fresh, bounded TorBox snapshot itself.
+                await run_transfer_poller_tick(session)
                 downloading_count = await count_downloading_entities(session)
             except Exception as exc:
                 logger.debug("Live active pushes refresh skipped: %s", exc)

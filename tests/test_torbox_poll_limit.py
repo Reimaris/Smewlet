@@ -119,3 +119,9 @@ def test_tick_timings_warn_only_when_slow(caplog):
     with patch.object(tp, "SLOW_TICK_SECONDS", -1.0):
         timings.log(7)
     assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+async def test_snapshot_bypasses_torbox_server_cache(db_session, fetch):
+    fetch.return_value = _items(3)
+    await tp._fetch_torbox_snapshot(db_session)
+    assert fetch.await_args.kwargs["bypass_cache"] is True

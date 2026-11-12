@@ -1145,6 +1145,9 @@ async def _fetch_torbox_snapshot(
 ) -> tuple[list[dict[str, Any]], bool]:
     """Return ``(transfers, complete)``; ``complete`` is False for a truncated snapshot.
 
+    TorBox caches ``mylist`` responses server-side (per query), so every call
+    bypasses that cache; otherwise states such as ``failed`` arrive minutes late.
+
     Fetches only the newest entries, falling back to the full list when a tracked
     transfer is missing from them or a periodic full sync is due.
     """
@@ -1153,14 +1156,14 @@ async def _fetch_torbox_snapshot(
     now = time.monotonic()
     if now - _last_torbox_full_sync < TORBOX_FULL_SYNC_INTERVAL_SECONDS:
         recent = await client.fetch_raw_transfers(
-            bypass_cache=False, session=session, limit=TORBOX_POLL_RECENT_LIMIT
+            bypass_cache=True, session=session, limit=TORBOX_POLL_RECENT_LIMIT
         )
         if len(recent) < TORBOX_POLL_RECENT_LIMIT:
             return recent, True  # the account is small: this is everything
         present = {str(d["id"]) for d in recent if d.get("id") is not None}
         if not (await _tracked_torbox_ids(session) - present):
             return recent, False
-    full = await client.fetch_raw_transfers(bypass_cache=False, session=session)
+    full = await client.fetch_raw_transfers(bypass_cache=True, session=session)
     _last_torbox_full_sync = time.monotonic()
     return full, True
 
