@@ -276,6 +276,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         IntervalTrigger(seconds=20),
         id="transfer_poller_job",
         replace_existing=True,
+        misfire_grace_time=15,
+        coalesce=True,
     )
     from app.core.rate_limit_queue import (
         RESUME_JOB_ID,
@@ -289,6 +291,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         IntervalTrigger(seconds=15),
         id=RESUME_JOB_ID,
         replace_existing=True,
+        misfire_grace_time=15,
+        coalesce=True,
     )
     scheduler.start()
     transfer_poller.set_scheduler(scheduler)
