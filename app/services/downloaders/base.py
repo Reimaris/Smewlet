@@ -138,9 +138,15 @@ class BaseDownloader(ABC):
 
     @classmethod
     async def fetch_raw_transfers(
-        cls, bypass_cache: bool = False, session: AsyncSession | None = None
+        cls,
+        bypass_cache: bool = False,
+        session: AsyncSession | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Provider-shaped live transfer dicts for the poller (default: none)."""
+        """Provider-shaped live transfer dicts for the poller (default: none).
+
+        ``limit`` requests only the newest N transfers where the provider supports it.
+        """
         return []
 
     @classmethod

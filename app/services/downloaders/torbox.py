@@ -522,8 +522,13 @@ async def get_usenet_downloads(
     session: AsyncSession | None = None,
     explicit_key: str | None = None,
     raise_on_error: bool = False,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve list of active Usenet downloads from TorBox.
+
+    ``limit`` asks TorBox for only the newest N entries (large accounts hold
+    thousands). A limited result is never cached, because other callers expect
+    the full list; a fresh cached full list is still returned as-is.
 
     With ``raise_on_error`` a transport failure raises ``DownloaderNetworkError``
     instead of returning ``[]``, so callers can tell an outage from a missing
@@ -544,8 +549,13 @@ async def get_usenet_downloads(
         return _cached_usenet_downloads
 
     url = f"{TORBOX_BASE_URL}/api/usenet/mylist"
+    query: list[str] = []
     if bypass_cache:
-        url += "?bypass_cache=true"
+        query.append("bypass_cache=true")
+    if limit is not None:
+        query.append(f"offset=0&limit={int(limit)}")
+    if query:
+        url += "?" + "&".join(query)
 
     headers = {
         "Authorization": f"Bearer {key}",
@@ -560,9 +570,10 @@ async def get_usenet_downloads(
             result = response.json()
             if result.get("success"):
                 data: list[dict[str, Any]] = result.get("data", [])
-                async with _cache_lock:
-                    _cached_usenet_downloads = data
-                    _cached_usenet_downloads_at = time.monotonic()
+                if limit is None:
+                    async with _cache_lock:
+                        _cached_usenet_downloads = data
+                        _cached_usenet_downloads_at = time.monotonic()
                 return data
             return []
         except httpx.HTTPError as e:
@@ -679,9 +690,18 @@ class TorBoxDownloader(BaseDownloader):
 
     @classmethod
     async def fetch_raw_transfers(
-        cls, bypass_cache: bool = False, session: AsyncSession | None = None
+        cls,
+        bypass_cache: bool = False,
+        session: AsyncSession | None = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        return await get_usenet_downloads(bypass_cache=bypass_cache, session=session)
+        if limit is None:
+            return await get_usenet_downloads(
+                bypass_cache=bypass_cache, session=session
+            )
+        return await get_usenet_downloads(
+            bypass_cache=bypass_cache, session=session, limit=limit
+        )
 
     @classmethod
     async def delete_raw_transfer(

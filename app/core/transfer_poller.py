@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -1085,6 +1086,85 @@ ACTIVE_POLLABLE_STATUS_DETAILS = (
 )
 
 
+# Large TorBox accounts hold thousands of entries; the poller only needs the newest
+# ones plus the transfers it tracks. A full snapshot is still taken periodically so
+# completed rows removed on TorBox are reconciled.
+TORBOX_POLL_RECENT_LIMIT = 200
+TORBOX_FULL_SYNC_INTERVAL_SECONDS = 600.0
+SLOW_TICK_SECONDS = 5.0
+_last_torbox_full_sync: float = float("-inf")
+
+
+class _TickTimings:
+    """Per-stage wall-clock timings of one poller tick (makes slow ticks diagnosable)."""
+
+    def __init__(self) -> None:
+        self._start = self._last = time.monotonic()
+        self.stages: list[tuple[str, float]] = []
+
+    def mark(self, stage: str) -> None:
+        now = time.monotonic()
+        self.stages.append((stage, now - self._last))
+        self._last = now
+
+    def log(self, torbox_items: int) -> None:
+        total = time.monotonic() - self._start
+        detail = ", ".join(f"{name}={secs:.2f}s" for name, secs in self.stages)
+        level = logging.WARNING if total >= SLOW_TICK_SECONDS else logging.DEBUG
+        logger.log(
+            level,
+            "[POLLER] Tick finished in %.2fs (torbox_items=%d): %s",
+            total,
+            torbox_items,
+            detail,
+        )
+
+
+async def _tracked_torbox_ids(session: AsyncSession) -> set[str]:
+    rows = (
+        (
+            await session.execute(
+                select(DownloadHistory.downloader_transfer_id).where(
+                    DownloadHistory.is_dismissed.is_(False),
+                    DownloadHistory.downloader_type == "torbox",
+                    DownloadHistory.downloader_transfer_id.is_not(None),
+                    func.lower(func.coalesce(DownloadHistory.status_detail, "")).in_(
+                        ACTIVE_POLLABLE_STATUS_DETAILS
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {str(r) for r in rows}
+
+
+async def _fetch_torbox_snapshot(
+    session: AsyncSession,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return ``(transfers, complete)``; ``complete`` is False for a truncated snapshot.
+
+    Fetches only the newest entries, falling back to the full list when a tracked
+    transfer is missing from them or a periodic full sync is due.
+    """
+    global _last_torbox_full_sync
+    client = downloader_class("torbox")
+    now = time.monotonic()
+    if now - _last_torbox_full_sync < TORBOX_FULL_SYNC_INTERVAL_SECONDS:
+        recent = await client.fetch_raw_transfers(
+            bypass_cache=False, session=session, limit=TORBOX_POLL_RECENT_LIMIT
+        )
+        if len(recent) < TORBOX_POLL_RECENT_LIMIT:
+            return recent, True  # the account is small: this is everything
+        present = {str(d["id"]) for d in recent if d.get("id") is not None}
+        if not (await _tracked_torbox_ids(session) - present):
+            return recent, False
+    full = await client.fetch_raw_transfers(bypass_cache=False, session=session)
+    _last_torbox_full_sync = time.monotonic()
+    return full, True
+
+
 async def _run_transfer_poller_tick_with_session(
     session: AsyncSession,
     pre_fetched_downloads: list[dict[str, Any]] | None = None,
@@ -1107,6 +1187,7 @@ async def _run_transfer_poller_tick_with_session(
     )
 
     transfer_poller.last_polled_at = datetime.now(timezone.utc)
+    timings = _TickTimings()
 
     active_types = set(
         (
@@ -1132,10 +1213,9 @@ async def _run_transfer_poller_tick_with_session(
         or not adapter_types
         or "torbox" in active_types
     ):
+        complete = True
         if pre_fetched_downloads is None:
-            raw_downloads = await downloader_class("torbox").fetch_raw_transfers(
-                bypass_cache=False, session=session
-            )
+            raw_downloads, complete = await _fetch_torbox_snapshot(session)
         else:
             raw_downloads = pre_fetched_downloads
 
@@ -1144,10 +1224,14 @@ async def _run_transfer_poller_tick_with_session(
             if d.get("id") is not None:
                 tb_map[str(d["id"])] = d
 
-        if tb_map:
+        # A truncated snapshot lacks old ids: reconciling against it would wrongly
+        # mark still-existing completed rows as deleted.
+        if tb_map and complete:
             await reconcile_completed_history(session, "torbox", set(tb_map.keys()))
+    timings.mark("torbox_fetch")
 
     transfer_maps: dict[str, dict[str, dict[str, Any]]] = {"torbox": tb_map}
+    timings.mark("adapters_pending")
     clients: dict[str, BaseDownloader] = {}
     skipped_types: set[str] = set()
     removed_types: set[str] = set()
@@ -1622,6 +1706,7 @@ async def _run_transfer_poller_tick_with_session(
         # 3. Still actively downloading / processing
         history.status_detail = status_lower or "downloading"
 
+    timings.mark("match_history")
     await _poll_adhoc_transfers(
         session,
         transfer_maps=transfer_maps,
@@ -1648,9 +1733,11 @@ async def _run_transfer_poller_tick_with_session(
         sh_max_retries=sh_max_retries,
     )
 
+    timings.mark("finalize")
     remaining_active = await count_downloading_entities(session)
     if remaining_active == 0:
         transfer_poller.sleep(0)
+    timings.log(len(tb_map))
 
     return {
         "polled": True,
