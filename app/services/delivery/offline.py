@@ -108,18 +108,21 @@ def _swallow(fut: asyncio.Future[bool]) -> None:
 
 
 async def probe_root(root: Path) -> bool:
-    """True when ``root`` is reachable; False when offline, hung or already being probed."""
-    pending = _inflight.get(root)
-    if pending is not None and not pending.done():
-        return False
-    fut: asyncio.Future[bool] = asyncio.ensure_future(
-        asyncio.to_thread(_probe_sync, root)
-    )
-    fut.add_done_callback(_swallow)
-    fut.add_done_callback(
-        lambda f: _inflight.pop(root, None) if _inflight.get(root) is f else None
-    )
-    _inflight[root] = fut
+    """True when ``root`` is reachable; False when offline or hung past the timeout.
+
+    Concurrent callers share one in-flight probe per root instead of reporting
+    "offline" just because another probe is still running.
+    """
+    fut = _inflight.get(root)
+    if fut is None or fut.done():
+        fut = asyncio.get_running_loop().run_in_executor(
+            _fs_executor, _probe_sync, root
+        )
+        fut.add_done_callback(_swallow)
+        fut.add_done_callback(
+            lambda f: _inflight.pop(root, None) if _inflight.get(root) is f else None
+        )
+        _inflight[root] = fut
     try:
         return await asyncio.wait_for(asyncio.shield(fut), PROBE_TIMEOUT_SECONDS)
     except TimeoutError:

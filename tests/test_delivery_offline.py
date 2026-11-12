@@ -99,3 +99,31 @@ async def test_banner_context_label(tmp_path: Path):
     ctx = offline.offline_banner_context()
     assert ctx["attempt"] == 0
     assert len(ctx["next_check_label"]) == 5 and ctx["next_check_label"][2] == ":"
+
+
+async def test_concurrent_probes_share_one_inflight_probe(tmp_path: Path, monkeypatch):
+    calls: list[Path] = []
+
+    def slow(root):
+        calls.append(root)
+        time.sleep(0.1)
+        return True
+
+    monkeypatch.setattr(offline, "_probe_sync", slow)
+    results = await asyncio.gather(*(offline.probe_root(tmp_path) for _ in range(3)))
+    assert results == [True, True, True]
+    assert len(calls) == 1
+
+
+async def test_probe_does_not_use_default_executor(tmp_path: Path, monkeypatch):
+    names: list[str] = []
+
+    def record(root):
+        import threading
+
+        names.append(threading.current_thread().name)
+        return True
+
+    monkeypatch.setattr(offline, "_probe_sync", record)
+    assert await offline.probe_root(tmp_path) is True
+    assert names[0].startswith("delivery-fs")
