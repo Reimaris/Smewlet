@@ -2368,6 +2368,10 @@ async def get_active_pushes(session: AsyncSession) -> list[dict[str, Any]]:
             status_badge = "Unpacking"
         elif detail_lower == "verifying":
             status_badge = "Verifying"
+        elif detail_lower == "processing":
+            status_badge = "Processing"
+        elif detail_lower == "queued":
+            status_badge = "Queued"
         else:
             status_badge = "Downloading"
 
