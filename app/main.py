@@ -5587,7 +5587,7 @@ async def api_get_active_pushes(request: Request) -> Response:
         await session.rollback()
         if downloading_count > 0 and not poller_busy():
             try:
-                # The tick fetches a fresh, bounded TorBox snapshot itself.
+                # The tick fetches a fresh, bounded transfer snapshot itself.
                 await run_transfer_poller_tick(session)
                 downloading_count = await count_downloading_entities(session)
             except Exception as exc:

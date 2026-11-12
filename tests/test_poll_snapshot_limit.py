@@ -10,7 +10,7 @@ from app.services.downloaders import torbox
 from app.services.downloaders.factory import downloader_class
 from tests.conftest import make_history, make_movie
 
-LIMIT = tp.TORBOX_POLL_RECENT_LIMIT
+LIMIT = tp.POLL_RECENT_LIMIT
 
 
 @pytest.fixture(autouse=True)
@@ -18,12 +18,12 @@ def _fresh_full_sync():
     """Each test starts as if a full sync happened just now (limited path active)."""
     import time
 
-    old = tp._last_torbox_full_sync
-    tp._last_torbox_full_sync = time.monotonic()
-    tp._torbox_confirmed_absent.clear()
+    old = tp._last_full_sync
+    tp._last_full_sync = time.monotonic()
+    tp._confirmed_absent.clear()
     yield
-    tp._last_torbox_full_sync = old
-    tp._torbox_confirmed_absent.clear()
+    tp._last_full_sync = old
+    tp._confirmed_absent.clear()
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ async def test_limit_is_sent_to_torbox_and_not_cached():
 
 async def test_small_account_is_complete(db_session, fetch):
     fetch.return_value = _items(3)
-    items, complete = await tp._fetch_torbox_snapshot(db_session)
+    items, complete = await tp._fetch_transfer_snapshot(db_session)
     assert len(items) == 3 and complete is True
     fetch.assert_awaited_once()
 
@@ -79,7 +79,7 @@ async def test_truncated_snapshot_is_incomplete_when_tracked_ids_present(
         is_dismissed=False,
     )
     fetch.return_value = _items(LIMIT)
-    items, complete = await tp._fetch_torbox_snapshot(db_session)
+    items, complete = await tp._fetch_transfer_snapshot(db_session)
     assert len(items) == LIMIT and complete is False
     fetch.assert_awaited_once()
 
@@ -95,16 +95,16 @@ async def test_falls_back_to_full_list_when_tracked_id_missing(db_session, fetch
         is_dismissed=False,
     )
     fetch.side_effect = [_items(LIMIT), _items(LIMIT + 50)]
-    items, complete = await tp._fetch_torbox_snapshot(db_session)
+    items, complete = await tp._fetch_transfer_snapshot(db_session)
     assert len(items) == LIMIT + 50 and complete is True
     assert fetch.await_count == 2
     assert "limit" not in fetch.await_args_list[1].kwargs
 
 
 async def test_periodic_full_sync_is_taken(db_session, fetch):
-    tp._last_torbox_full_sync = float("-inf")
+    tp._last_full_sync = float("-inf")
     fetch.return_value = _items(LIMIT + 10)
-    items, complete = await tp._fetch_torbox_snapshot(db_session)
+    items, complete = await tp._fetch_transfer_snapshot(db_session)
     assert complete is True and len(items) == LIMIT + 10
     fetch.assert_awaited_once()
     assert "limit" not in fetch.await_args.kwargs
@@ -125,7 +125,7 @@ def test_tick_timings_warn_only_when_slow(caplog):
 
 async def test_snapshot_bypasses_torbox_server_cache(db_session, fetch):
     fetch.return_value = _items(3)
-    await tp._fetch_torbox_snapshot(db_session)
+    await tp._fetch_transfer_snapshot(db_session)
     assert fetch.await_args.kwargs["bypass_cache"] is True
 
 
@@ -143,9 +143,9 @@ async def test_transfer_deleted_on_torbox_does_not_force_full_fetch_every_tick(
     )
     # first tick: recent lacks the tracked id -> full fetch confirms it is gone
     fetch.side_effect = [_items(LIMIT), _items(LIMIT + 50)]
-    await tp._fetch_torbox_snapshot(db_session)
+    await tp._fetch_transfer_snapshot(db_session)
     assert fetch.await_count == 2
     # next tick: stays on the bounded fetch
     fetch.side_effect = [_items(LIMIT)]
-    items, complete = await tp._fetch_torbox_snapshot(db_session)
+    items, complete = await tp._fetch_transfer_snapshot(db_session)
     assert fetch.await_count == 3 and complete is False

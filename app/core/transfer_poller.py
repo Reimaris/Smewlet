@@ -1086,16 +1086,16 @@ ACTIVE_POLLABLE_STATUS_DETAILS = (
 )
 
 
-# Large TorBox accounts hold thousands of entries; the poller only needs the newest
+# Large downloader accounts hold thousands of entries; the poller only needs the newest
 # ones plus the transfers it tracks. A full snapshot is still taken periodically so
-# completed rows removed on TorBox are reconciled.
-TORBOX_POLL_RECENT_LIMIT = 200
-TORBOX_FULL_SYNC_INTERVAL_SECONDS = 600.0
+# completed rows removed at the downloader are reconciled.
+POLL_RECENT_LIMIT = 200
+FULL_SYNC_INTERVAL_SECONDS = 600.0
 SLOW_TICK_SECONDS = 5.0
-_last_torbox_full_sync: float = float("-inf")
-# Tracked ids a full snapshot confirmed are gone from TorBox (id -> monotonic time),
-# so a transfer deleted on TorBox does not force a full fetch on every tick.
-_torbox_confirmed_absent: dict[str, float] = {}
+_last_full_sync: float = float("-inf")
+# Tracked ids a full snapshot confirmed are gone from the downloader (id -> monotonic time),
+# so a transfer deleted at the downloader does not force a full fetch on every tick.
+_confirmed_absent: dict[str, float] = {}
 
 
 class _TickTimings:
@@ -1110,20 +1110,20 @@ class _TickTimings:
         self.stages.append((stage, now - self._last))
         self._last = now
 
-    def log(self, torbox_items: int) -> None:
+    def log(self, items: int) -> None:
         total = time.monotonic() - self._start
         detail = ", ".join(f"{name}={secs:.2f}s" for name, secs in self.stages)
         level = logging.WARNING if total >= SLOW_TICK_SECONDS else logging.DEBUG
         logger.log(
             level,
-            "[POLLER] Tick finished in %.2fs (torbox_items=%d): %s",
+            "[POLLER] Tick finished in %.2fs (items=%d): %s",
             total,
-            torbox_items,
+            items,
             detail,
         )
 
 
-async def _tracked_torbox_ids(session: AsyncSession) -> set[str]:
+async def _tracked_transfer_ids(session: AsyncSession) -> set[str]:
     rows = (
         (
             await session.execute(
@@ -1143,38 +1143,39 @@ async def _tracked_torbox_ids(session: AsyncSession) -> set[str]:
     return {str(r) for r in rows}
 
 
-async def _fetch_torbox_snapshot(
+async def _fetch_transfer_snapshot(
     session: AsyncSession,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Return ``(transfers, complete)``; ``complete`` is False for a truncated snapshot.
 
-    TorBox caches ``mylist`` responses server-side (per query), so every call
+    Some downloaders cache list responses server-side, so every call
     bypasses that cache; otherwise states such as ``failed`` arrive minutes late.
 
     Fetches only the newest entries, falling back to the full list when a tracked
     transfer is missing from them or a periodic full sync is due.
     """
-    global _last_torbox_full_sync
+    global _last_full_sync
     client = downloader_class("torbox")
     now = time.monotonic()
-    for tid, seen in list(_torbox_confirmed_absent.items()):
-        if now - seen >= TORBOX_FULL_SYNC_INTERVAL_SECONDS:
-            del _torbox_confirmed_absent[tid]
-    if now - _last_torbox_full_sync < TORBOX_FULL_SYNC_INTERVAL_SECONDS:
+    for tid, seen in list(_confirmed_absent.items()):
+        if now - seen >= FULL_SYNC_INTERVAL_SECONDS:
+            del _confirmed_absent[tid]
+    if now - _last_full_sync < FULL_SYNC_INTERVAL_SECONDS:
         recent = await client.fetch_raw_transfers(
-            bypass_cache=True, session=session, limit=TORBOX_POLL_RECENT_LIMIT
+            bypass_cache=True, session=session, limit=POLL_RECENT_LIMIT
         )
-        if len(recent) < TORBOX_POLL_RECENT_LIMIT:
+        if len(recent) < POLL_RECENT_LIMIT:
             return recent, True  # the account is small: this is everything
         present = {str(d["id"]) for d in recent if d.get("id") is not None}
-        missing = await _tracked_torbox_ids(session) - present
-        if not (missing - _torbox_confirmed_absent.keys()):
+        missing = await _tracked_transfer_ids(session) - present
+        if not (missing - _confirmed_absent.keys()):
             return recent, False
     full = await client.fetch_raw_transfers(bypass_cache=True, session=session)
-    _last_torbox_full_sync = time.monotonic()
-    live = {str(d["id"]) for d in full if d.get("id") is not None}
-    for tid in await _tracked_torbox_ids(session) - live:
-        _torbox_confirmed_absent[tid] = _last_torbox_full_sync
+    _last_full_sync = time.monotonic()
+    if full:  # an empty list may be a failed fetch: confirm nothing absent from it
+        live = {str(d["id"]) for d in full if d.get("id") is not None}
+        for tid in await _tracked_transfer_ids(session) - live:
+            _confirmed_absent[tid] = _last_full_sync
     return full, True
 
 
@@ -1228,7 +1229,7 @@ async def _run_transfer_poller_tick_with_session(
     ):
         complete = True
         if pre_fetched_downloads is None:
-            raw_downloads, complete = await _fetch_torbox_snapshot(session)
+            raw_downloads, complete = await _fetch_transfer_snapshot(session)
         else:
             raw_downloads = pre_fetched_downloads
 
@@ -1241,7 +1242,7 @@ async def _run_transfer_poller_tick_with_session(
         # mark still-existing completed rows as deleted.
         if tb_map and complete:
             await reconcile_completed_history(session, "torbox", set(tb_map.keys()))
-    timings.mark("torbox_fetch")
+    timings.mark("transfer_fetch")
 
     transfer_maps: dict[str, dict[str, dict[str, Any]]] = {"torbox": tb_map}
     timings.mark("adapters_pending")
