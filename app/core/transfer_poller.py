@@ -1093,6 +1093,9 @@ TORBOX_POLL_RECENT_LIMIT = 200
 TORBOX_FULL_SYNC_INTERVAL_SECONDS = 600.0
 SLOW_TICK_SECONDS = 5.0
 _last_torbox_full_sync: float = float("-inf")
+# Tracked ids a full snapshot confirmed are gone from TorBox (id -> monotonic time),
+# so a transfer deleted on TorBox does not force a full fetch on every tick.
+_torbox_confirmed_absent: dict[str, float] = {}
 
 
 class _TickTimings:
@@ -1154,6 +1157,9 @@ async def _fetch_torbox_snapshot(
     global _last_torbox_full_sync
     client = downloader_class("torbox")
     now = time.monotonic()
+    for tid, seen in list(_torbox_confirmed_absent.items()):
+        if now - seen >= TORBOX_FULL_SYNC_INTERVAL_SECONDS:
+            del _torbox_confirmed_absent[tid]
     if now - _last_torbox_full_sync < TORBOX_FULL_SYNC_INTERVAL_SECONDS:
         recent = await client.fetch_raw_transfers(
             bypass_cache=True, session=session, limit=TORBOX_POLL_RECENT_LIMIT
@@ -1161,10 +1167,14 @@ async def _fetch_torbox_snapshot(
         if len(recent) < TORBOX_POLL_RECENT_LIMIT:
             return recent, True  # the account is small: this is everything
         present = {str(d["id"]) for d in recent if d.get("id") is not None}
-        if not (await _tracked_torbox_ids(session) - present):
+        missing = await _tracked_torbox_ids(session) - present
+        if not (missing - _torbox_confirmed_absent.keys()):
             return recent, False
     full = await client.fetch_raw_transfers(bypass_cache=True, session=session)
     _last_torbox_full_sync = time.monotonic()
+    live = {str(d["id"]) for d in full if d.get("id") is not None}
+    for tid in await _tracked_torbox_ids(session) - live:
+        _torbox_confirmed_absent[tid] = _last_torbox_full_sync
     return full, True
 
 

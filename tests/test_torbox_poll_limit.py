@@ -20,8 +20,10 @@ def _fresh_full_sync():
 
     old = tp._last_torbox_full_sync
     tp._last_torbox_full_sync = time.monotonic()
+    tp._torbox_confirmed_absent.clear()
     yield
     tp._last_torbox_full_sync = old
+    tp._torbox_confirmed_absent.clear()
 
 
 @pytest.fixture
@@ -125,3 +127,25 @@ async def test_snapshot_bypasses_torbox_server_cache(db_session, fetch):
     fetch.return_value = _items(3)
     await tp._fetch_torbox_snapshot(db_session)
     assert fetch.await_args.kwargs["bypass_cache"] is True
+
+
+async def test_transfer_deleted_on_torbox_does_not_force_full_fetch_every_tick(
+    db_session, fetch
+):
+    movie = await make_movie(db_session)
+    await make_history(
+        db_session,
+        item=movie,
+        downloader_type="torbox",
+        downloader_transfer_id="99999",
+        status_detail="downloading",
+        is_dismissed=False,
+    )
+    # first tick: recent lacks the tracked id -> full fetch confirms it is gone
+    fetch.side_effect = [_items(LIMIT), _items(LIMIT + 50)]
+    await tp._fetch_torbox_snapshot(db_session)
+    assert fetch.await_count == 2
+    # next tick: stays on the bounded fetch
+    fetch.side_effect = [_items(LIMIT)]
+    items, complete = await tp._fetch_torbox_snapshot(db_session)
+    assert fetch.await_count == 3 and complete is False
