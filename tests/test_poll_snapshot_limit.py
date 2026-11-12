@@ -149,3 +149,14 @@ async def test_transfer_deleted_on_torbox_does_not_force_full_fetch_every_tick(
     fetch.side_effect = [_items(LIMIT)]
     items, complete = await tp._fetch_transfer_snapshot(db_session)
     assert fetch.await_count == 3 and complete is False
+
+
+async def test_ticks_within_ttl_share_one_snapshot(db_session, fetch):
+    fetch.return_value = _items(3)
+    first = await tp._cached_transfer_snapshot(db_session)
+    second = await tp._cached_transfer_snapshot(db_session)
+    assert first == second
+    fetch.assert_awaited_once()
+    tp.clear_snapshot_cache()
+    await tp._cached_transfer_snapshot(db_session)
+    assert fetch.await_count == 2

@@ -5580,6 +5580,9 @@ async def api_get_active_pushes(request: Request) -> Response:
     force = (request.query_params.get("force") or "").lower() in ("1", "true", "yes")
     if force:
         downloader_class("torbox").clear_transfer_cache()
+        from app.core.transfer_poller import clear_snapshot_cache
+
+        clear_snapshot_cache()
 
     async with async_session_factory() as session:
         downloading_count = await count_downloading_entities(session)

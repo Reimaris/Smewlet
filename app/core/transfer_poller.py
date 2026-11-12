@@ -1179,6 +1179,29 @@ async def _fetch_transfer_snapshot(
     return full, True
 
 
+# Ticks fired within this window (several browser tabs plus the 20s job) share one
+# snapshot; without it each tick queues behind the downloader's poll rate limiter.
+SNAPSHOT_TTL_SECONDS = 6.0
+_snapshot_cache: tuple[float, list[dict[str, Any]], bool] | None = None
+
+
+def clear_snapshot_cache() -> None:
+    global _snapshot_cache
+    _snapshot_cache = None
+
+
+async def _cached_transfer_snapshot(
+    session: AsyncSession,
+) -> tuple[list[dict[str, Any]], bool]:
+    global _snapshot_cache
+    cached = _snapshot_cache
+    if cached is not None and time.monotonic() - cached[0] < SNAPSHOT_TTL_SECONDS:
+        return cached[1], cached[2]
+    items, complete = await _fetch_transfer_snapshot(session)
+    _snapshot_cache = (time.monotonic(), items, complete)
+    return items, complete
+
+
 async def _run_transfer_poller_tick_with_session(
     session: AsyncSession,
     pre_fetched_downloads: list[dict[str, Any]] | None = None,
@@ -1229,7 +1252,7 @@ async def _run_transfer_poller_tick_with_session(
     ):
         complete = True
         if pre_fetched_downloads is None:
-            raw_downloads, complete = await _fetch_transfer_snapshot(session)
+            raw_downloads, complete = await _cached_transfer_snapshot(session)
         else:
             raw_downloads = pre_fetched_downloads
 

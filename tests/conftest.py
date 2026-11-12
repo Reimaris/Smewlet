@@ -121,8 +121,14 @@ def restore_app_logger_level():
 
 @pytest.fixture(autouse=True)
 def reset_downloader_state():
-    from app.core.transfer_poller import clear_dry_run_pushes, transfer_poller
+    from app.core.transfer_poller import (
+        clear_dry_run_pushes,
+        clear_snapshot_cache,
+        transfer_poller,
+    )
     from app.services import provider_service
+
+    clear_snapshot_cache()
 
     provider_service._remember_active(None)
     torbox.set_cooldown(0.0)
@@ -142,6 +148,7 @@ def reset_downloader_state():
     clear_setup_cache()
     rate_limit_episode.reset()
     yield
+    clear_snapshot_cache()
     clear_all_indexer_cooldowns()
     clear_outages()
     clear_setup_cache()
