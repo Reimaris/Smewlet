@@ -844,24 +844,50 @@ class TorBoxDownloader(BaseDownloader):
             )
         return transfers
 
-    async def get_transfer_files(self, transfer_id: str) -> list[DownloaderFile]:
-        items = await get_usenet_downloads(session=self.session, explicit_key=self._key)
-        for item in items:
-            if str(item.get("id")) != str(transfer_id):
-                continue
-            raw_files = item.get("files")
-            if not isinstance(raw_files, list):
-                return []
-            return [
-                DownloaderFile(
-                    name=str(f.get("name") or f.get("short_name") or ""),
-                    size_bytes=int(f.get("size") or 0),
-                    path=f.get("name"),
+    async def _find_raw_transfer(self, transfer_id: str) -> dict[str, Any] | None:
+        """Fresh raw transfer by id: newest entries first, full list as a fallback.
+
+        Bypasses TorBox's server-side list cache, which can still show a just-finished
+        transfer without its files.
+        """
+        recent_limit = 200
+        for limit in (recent_limit, None):
+            if limit is None:
+                items = await get_usenet_downloads(
+                    bypass_cache=True,
+                    session=self.session,
+                    explicit_key=self._key,
+                    raise_on_error=True,
                 )
-                for f in raw_files
-                if isinstance(f, dict)
-            ]
-        return []
+            else:
+                items = await get_usenet_downloads(
+                    bypass_cache=True,
+                    session=self.session,
+                    explicit_key=self._key,
+                    raise_on_error=True,
+                    limit=limit,
+                )
+            for item in items:
+                if str(item.get("id")) == str(transfer_id):
+                    return item
+            if limit is None or len(items) < recent_limit:
+                break
+        return None
+
+    async def get_transfer_files(self, transfer_id: str) -> list[DownloaderFile]:
+        item = await self._find_raw_transfer(transfer_id)
+        raw_files = item.get("files") if item is not None else None
+        if not isinstance(raw_files, list):
+            return []
+        return [
+            DownloaderFile(
+                name=str(f.get("name") or f.get("short_name") or ""),
+                size_bytes=int(f.get("size") or 0),
+                path=f.get("name"),
+            )
+            for f in raw_files
+            if isinstance(f, dict)
+        ]
 
     async def get_download_links(self, transfer_id: str) -> list[DownloadLink]:
         items = await get_usenet_downloads(

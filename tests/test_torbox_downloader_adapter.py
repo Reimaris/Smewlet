@@ -123,3 +123,17 @@ async def test_get_transfer_files(client, monkeypatch):
     assert (f.name, f.size_bytes) == ("a/b.mkv", 10)
     assert await client.get_transfer_files("2") == []
     assert await client.get_transfer_files("9") == []
+
+
+async def test_get_transfer_files_bypasses_cache_and_falls_back_to_full_list(
+    client, monkeypatch
+):
+    recent = [{"id": i} for i in range(200)]
+    full = [*recent, {"id": 500, "files": [{"name": "old.mkv", "size": 5}]}]
+    mock = AsyncMock(side_effect=[recent, full])
+    monkeypatch.setattr(torbox, "get_usenet_downloads", mock)
+    (f,) = await client.get_transfer_files("500")
+    assert f.name == "old.mkv"
+    assert all(c.kwargs["bypass_cache"] is True for c in mock.await_args_list)
+    assert mock.await_args_list[0].kwargs["limit"] == 200
+    assert "limit" not in mock.await_args_list[1].kwargs
